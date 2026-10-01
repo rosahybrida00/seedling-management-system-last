@@ -16,6 +16,7 @@ import {
 } from "@/lib/domain/supabase-types"
 import type { Seedling } from "@/lib/domain/supabase-types"
 import { FieldObservatory } from "@/components/breeding/field-observatory"
+import { SeedLotTracking } from "@/components/breeding/serre/seed-lot-tracking"
 
 // ---------------------------------------------------------------------------
 // Un semis (seedling) porte désormais directement `cross_id`, `fruit_code`,
@@ -51,6 +52,9 @@ interface SowingBatch {
   substrate: string | null
   stratification: string | null
   stratification_days: number | null
+  stratification_methods: string[] | null
+  stratification_start_date: string | null
+  stratification_end_date: string | null
 }
 
 interface CrossInfo {
@@ -335,6 +339,8 @@ function SerreContent() {
           )
         })}
       </div>
+      <SeedLotTracking batches={batches} crossMap={crossMap} onRefresh={fetchData} />
+
       <SectionHeading
         title="Catalogue des Semis"
         description="Évaluation des individus issus des graines récoltées : phénotype, pression sanitaire, sélection et synthèse automatique. Indépendant du Catalogue Général."

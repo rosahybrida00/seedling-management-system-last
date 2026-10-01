@@ -84,10 +84,14 @@ export function generateFruitCode(baseSyllable: string, lotIndex: number, flower
 }
 
 /**
- * Nom final de la graine récoltée : codeFruit-numéro (ex: blapego-A-a-1).
- * Le numéro est ajouté juste après la lettre minuscule qui définit le fruit.
+ * Nom final de la graine récoltée : codeFruit-numéro-année (ex:
+ * blapego-A-a-1-2026). L'année est celle de la récolte de CE fruit, ajoutée
+ * en dernier segment : la lettre de lot et la lettre de fruit continuent de
+ * s'incrémenter normalement d'une année sur l'autre pour un même couple de
+ * parents (plusieurs lots la même année : B, C... ; l'année ne fait
+ * qu'identifier la graine, elle ne réinitialise aucun compteur).
  */
-export function generateSeedName(fruitCode: string, seedNumber: number): string {
+export function generateSeedName(fruitCode: string, seedNumber: number, harvestYear: number): string {
   const cleanFruitCode = fruitCode.replace(/-+$/, "")
-  return `${cleanFruitCode}-${seedNumber}`
+  return `${cleanFruitCode}-${seedNumber}-${harvestYear}`
 }

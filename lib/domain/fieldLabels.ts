@@ -4,6 +4,22 @@
 // partout, seule "remarque" reste en texte libre.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Suivi des lots de graines (module Serre, après récolte). Liste de
+// méthodes PROVISOIRE — à ajuster dès qu'elle sera précisée ; un simple
+// changement ici suffit, sans nouvelle migration (stocké en text[]).
+// ---------------------------------------------------------------------------
+
+export const STRATIFICATION_METHOD_LABELS: Record<string, string> = {
+  froid_refrigerateur: "Stratification au froid (réfrigérateur)",
+  exterieur_hiver: "Semis direct extérieur (froid naturel)",
+  sable_humide: "Sable humide",
+  perlite_humide: "Perlite / vermiculite humide",
+  eau_oxygenee: "Trempage eau oxygénée (H2O2)",
+  acide_gibberellique: "Trempage acide gibbérellique (AG3)",
+  aucune: "Aucune stratification",
+}
+
 export const DISEASE_PRESSURE_LABELS: Record<string, string> = {
   oidium: "Oïdium",
   mildiou: "Mildiou",
