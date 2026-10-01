@@ -49,7 +49,7 @@ export function PlantView({ planting, label, observations, programs, interventio
       </div>
 
       {tab === "historique" ? <ObservationsSection plantingId={planting.id} observations={observations} onRefresh={onRefresh} /> : null}
-      {tab === "agenda" ? <AgendaSection plantingId={planting.id} programs={programs} interventionsByProgram={interventionsByProgram} onRefresh={onRefresh} /> : null}
+      {tab === "agenda" ? <AgendaSection target={{ planting_id: planting.id }} programs={programs} interventionsByProgram={interventionsByProgram} onRefresh={onRefresh} /> : null}
       {tab === "croisement" ? <CroisementBridge planting={planting} label={label} /> : null}
       {tab === "transfert" ? (
         <Card className="flex flex-col gap-4 p-4">

@@ -29,6 +29,7 @@ export interface FieldPlanting {
   plant_count?: number | null
   soil_type?: string | null
   container_type?: string | null
+  location_type?: "pot" | "pleine_terre" | null
   notes: string
 }
 

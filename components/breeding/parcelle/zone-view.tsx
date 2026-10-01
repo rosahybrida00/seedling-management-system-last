@@ -5,19 +5,21 @@
 import { useState, useEffect } from "react"
 import { Plus, Sprout, ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, Badge, Field, Input, EmptyState, Select } from "@/components/breeding/ui"
+import { Card, Badge, Field, Input, EmptyState, Select, SectionHeading } from "@/components/breeding/ui"
 import { formatDate } from "@/components/breeding/format"
 import { supabase } from "@/lib/supabase-client"
+import { AgendaSection } from "@/components/breeding/parcelle/agenda-section"
 import type {
   Zone, Greenhouse, GreenhouseTable, Parcelle, VarietyOption,
   FieldPlanting, FieldProgram, FieldIntervention, FieldObservation,
 } from "@/app/parcelle/types"
 
-export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plantingLabel, programsByPlanting, interventionsByProgram, observationsByPlanting, onBack, onOpenPlant, onRefresh }: {
+export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plantingLabel, programsByPlanting, interventionsByProgram, observationsByPlanting, zonePrograms, onBack, onOpenPlant, onRefresh }: {
   zone: Zone; plantings: FieldPlanting[]; greenhouses: Greenhouse[]; tables: GreenhouseTable[]; parcelles: Parcelle[]
   plantingLabel: (p: FieldPlanting) => string
   programsByPlanting: Map<string, FieldProgram[]>; interventionsByProgram: Map<string, FieldIntervention[]>
   observationsByPlanting: Map<string, FieldObservation[]>
+  zonePrograms: FieldProgram[]
   onBack: () => void; onOpenPlant: (id: string) => void; onRefresh: () => void
 }) {
   const [creating, setCreating] = useState(false)
@@ -28,7 +30,7 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
   const [tableId, setTableId] = useState("")
   const [plantCount, setPlantCount] = useState("1")
   const [soilType, setSoilType] = useState(zone.kind === "parcelle" ? (zone.parcelle.soil_type?.[0] ?? "") : "")
-  const [containerType, setContainerType] = useState("")
+  const [locationType, setLocationType] = useState<"pot" | "pleine_terre">(zone.kind === "serre" ? "pot" : "pleine_terre")
   const [plantedAt, setPlantedAt] = useState(new Date().toISOString().split("T")[0])
   const [notes, setNotes] = useState("")
 
@@ -78,7 +80,7 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
       planted_at: plantedAt,
       plant_count: Math.max(1, Number.parseInt(plantCount, 10) || 1),
       soil_type: soilType.trim() || null,
-      container_type: containerType.trim() || null,
+      location_type: locationType,
       notes: notes.trim(),
     })
     if (error) { alert(`Erreur : ${error.message}`); return }
@@ -137,10 +139,25 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
             ) : null}
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Nombre de plants"><Input type="number" min="1" value={plantCount} onChange={(e) => setPlantCount(e.target.value)} /></Field>
+            <div>
+              <Field label="Type d'emplacement">
+                <div className="flex gap-4 pt-1">
+                  <label className="flex items-center gap-1.5 text-sm text-foreground">
+                    <input type="checkbox" checked={locationType === "pot"} onChange={() => setLocationType("pot")} />
+                    Conteneur / Pot
+                  </label>
+                  <label className="flex items-center gap-1.5 text-sm text-foreground">
+                    <input type="checkbox" checked={locationType === "pleine_terre"} onChange={() => setLocationType("pleine_terre")} />
+                    Pleine terre
+                  </label>
+                </div>
+              </Field>
+            </div>
+            <Field label={locationType === "pot" ? "Nombre de pots" : "Nombre de plants"}>
+              <Input type="number" min="1" value={plantCount} onChange={(e) => setPlantCount(e.target.value)} />
+            </Field>
             <Field label="Date d'ajout"><Input type="date" value={plantedAt} onChange={(e) => setPlantedAt(e.target.value)} /></Field>
             <Field label={zone.kind === "parcelle" ? "Type de sol" : "Type de sol / substrat"}><Input value={soilType} onChange={(e) => setSoilType(e.target.value)} placeholder="Ex. terre argileuse, terreau" /></Field>
-            <Field label="Contenant"><Input value={containerType} onChange={(e) => setContainerType(e.target.value)} placeholder="Ex. pot en terre cuite" /></Field>
             <div className="sm:col-span-2"><Field label="Note initiale"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Observation à l'installation" /></Field></div>
           </div>
           <div className="mt-3 flex justify-end gap-2">
@@ -163,13 +180,25 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
                   {alert ? <span className="size-2 rounded-full bg-destructive" /> : null}
                   <Sprout className="size-4 text-primary" />
                   <span className="text-sm font-medium">{plantingLabel(p)}</span>
+                  {p.location_type ? <Badge tone="neutral">{p.location_type === "pot" ? "Pot" : "Pleine terre"}</Badge> : null}
                 </div>
-                <p className="text-xs text-muted-foreground">Planté le {formatDate(p.planted_at)}</p>
+                <p className="text-xs text-muted-foreground">
+                  Planté le {formatDate(p.planted_at)}{p.plant_count ? ` · ${p.plant_count} ${p.location_type === "pot" ? "pot(s)" : "plant(s)"}` : ""}
+                  {lastObs ? ` · observé le ${formatDate(lastObs.observation_date)}` : ""}
+                </p>
               </button>
             )
           })}
         </div>
       )}
+
+      <SectionHeading title="Programme collectif de la zone" description="Traitement ou fertilisation appliqué à toute la serre/parcelle, en plus des programmes propres à chaque variété." />
+      <AgendaSection
+        target={zone.kind === "serre" ? { greenhouse_id: zone.greenhouse.id } : { parcelle_id: zone.parcelle.id }}
+        programs={zonePrograms}
+        interventionsByProgram={interventionsByProgram}
+        onRefresh={onRefresh}
+      />
     </div>
   )
 }

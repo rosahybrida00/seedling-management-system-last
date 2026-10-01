@@ -103,6 +103,13 @@ function ParcelleContent() {
     return plantings.filter((p) => p.parcelle_id === zone.parcelle.id)
   }
 
+  // Dernière date d'observation enregistrée pour un plant de cette zone.
+  function lastObservationDate(zone: Zone): string | null {
+    const plantingIds = new Set(plantingsOfZone(zone).map((p) => p.id))
+    const dates = observations.filter((o) => plantingIds.has(o.planting_id)).map((o) => o.observation_date)
+    return dates.length > 0 ? dates.reduce((a, b) => (a > b ? a : b)) : null
+  }
+
   // Statut de couleur : rouge si une observation récente signale maladie/
   // ravageur pour un plant de la zone ; orange s'il y a une intervention
   // prévue en retard (due_date <= aujourd'hui, non faite) ; vert sinon.
@@ -125,6 +132,13 @@ function ParcelleContent() {
   const visibleZones = watchlistOnly ? zones.filter((z) => zoneStatus(z.zone) !== "vert") : zones
   const currentZone = zoneKey ? zones.find((z) => z.key === zoneKey)?.zone ?? null : null
   const currentPlanting = plantingId ? plantings.find((p) => p.id === plantingId) ?? null : null
+  const currentZonePrograms = useMemo(() => {
+    if (!currentZone) return []
+    return programs.filter((p) =>
+      p.planting_id == null &&
+      (currentZone.kind === "serre" ? p.greenhouse_id === currentZone.greenhouse.id : p.parcelle_id === currentZone.parcelle.id)
+    )
+  }, [programs, currentZone])
 
   if (loading) return <div className="flex items-center justify-center py-20"><Sprout className="size-8 animate-pulse text-primary" /></div>
 
@@ -149,6 +163,7 @@ function ParcelleContent() {
               {visibleZones.map(({ key, zone }) => {
                 const status = zoneStatus(zone)
                 const count = plantingsOfZone(zone).length
+                const lastObs = lastObservationDate(zone)
                 const name = zone.kind === "serre" ? zone.greenhouse.name : zone.parcelle.name
                 return (
                   <button key={key} onClick={() => { setZoneKey(key); setView("zone") }} className="flex items-center gap-3 rounded-lg border border-border bg-card p-4 text-left hover:border-primary/40 hover:bg-muted/30">
@@ -156,7 +171,9 @@ function ParcelleContent() {
                     {zone.kind === "serre" ? <Warehouse className="size-5 text-muted-foreground" /> : <MapPin className="size-5 text-muted-foreground" />}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-foreground">{name}</p>
-                      <p className="text-xs text-muted-foreground">{count} plant{count > 1 ? "s" : ""}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {count} plant{count > 1 ? "s" : ""}{lastObs ? ` · dernière observation le ${new Date(lastObs).toLocaleDateString("fr-FR")}` : ""}
+                      </p>
                     </div>
                   </button>
                 )
@@ -170,7 +187,7 @@ function ParcelleContent() {
         <ZoneView
           zone={currentZone} plantings={plantingsOfZone(currentZone)} greenhouses={greenhouses} tables={tables} parcelles={parcelles}
           plantingLabel={plantingLabel} programsByPlanting={programsByPlanting} interventionsByProgram={interventionsByProgram}
-          observationsByPlanting={observationsByPlanting}
+          observationsByPlanting={observationsByPlanting} zonePrograms={currentZonePrograms}
           onBack={() => { setView("dashboard"); setZoneKey(null) }}
           onOpenPlant={(id) => { setPlantingId(id); setView("plant") }}
           onRefresh={fetchData}

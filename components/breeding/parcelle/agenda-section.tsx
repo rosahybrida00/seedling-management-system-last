@@ -9,8 +9,9 @@ import { supabase } from "@/lib/supabase-client"
 import { PROGRAM_TYPE_LABELS, PROGRAM_RESULT_LABELS } from "@/lib/domain/fieldLabels"
 import type { FieldProgram, FieldIntervention } from "@/app/parcelle/types"
 
-export function AgendaSection({ plantingId, programs, interventionsByProgram, onRefresh }: {
-  plantingId: string; programs: FieldProgram[]; interventionsByProgram: Map<string, FieldIntervention[]>; onRefresh: () => void
+export function AgendaSection({ target, programs, interventionsByProgram, onRefresh }: {
+  target: { planting_id: string } | { greenhouse_id: string } | { parcelle_id: string }
+  programs: FieldProgram[]; interventionsByProgram: Map<string, FieldIntervention[]>; onRefresh: () => void
 }) {
   const [creating, setCreating] = useState(false)
   const [programType, setProgramType] = useState<"curatif" | "preventif" | "fertilisation">("preventif")
@@ -20,7 +21,7 @@ export function AgendaSection({ plantingId, programs, interventionsByProgram, on
   async function createProgram() {
     if (!productName.trim()) return
     const { data, error } = await supabase.from("field_programs").insert({
-      planting_id: plantingId, program_type: programType, product_name: productName.trim(), start_date: firstDueDate,
+      ...target, program_type: programType, product_name: productName.trim(), start_date: firstDueDate,
     }).select("id").single()
     if (error) { alert(`Erreur : ${error.message}`); return }
     await supabase.from("field_interventions").insert({ program_id: data.id, due_date: firstDueDate })
@@ -63,7 +64,7 @@ export function AgendaSection({ plantingId, programs, interventionsByProgram, on
       ) : null}
 
       {rows.length === 0 ? (
-        <EmptyState icon={<ClipboardList className="size-8" />} title="Aucun programme" description="Créez un programme pour planifier fertilisation ou traitements sur ce plant." />
+        <EmptyState icon={<ClipboardList className="size-8" />} title="Aucun programme" description="Créez un programme pour planifier fertilisation ou traitements." />
       ) : (
         <div className="grid gap-2">
           {rows.map(({ program, iv }) => (
