@@ -9,6 +9,7 @@ import { supabase } from "@/lib/supabase-client"
 import { fetchSeasonBilan, type SeasonBilan, type ParentPerformance } from "@/lib/services/statsService"
 import { fetchRuleBilan, type RuleBilan, type RuleFinding } from "@/lib/services/ruleEngine"
 import type { CoupleFertility, PeerReference, RateWithCI, Verdict } from "@/lib/services/fertilityService"
+import type { FactorResult } from "@/lib/services/factorService"
 import { generateDhoPdf } from "@/lib/services/dhoExport"
 import {
   PRESSION_SANITAIRE_LABELS,
@@ -309,6 +310,8 @@ function BilansContent() {
         )}
       </Card>
 
+      <FactorsCard factors={bilan!.factors} />
+
       <RuleBilanPanel report={ruleBilan} />
     </div>
   )
@@ -510,6 +513,59 @@ function CoupleRanking({ couples }: { couples: CoupleFertility[] }) {
           </table>
         </div>
       )}
+    </Card>
+  )
+}
+
+const FACTOR_VERDICT: Record<FactorResult["verdict"], { label: string; tone: "warning" | "neutral" }> = {
+  difference: { label: "Écart observé", tone: "warning" },
+  aucune_difference: { label: "Pas d'écart démontré", tone: "neutral" },
+  insuffisant: { label: "Trop peu de données", tone: "neutral" },
+}
+
+function FactorsCard({ factors }: { factors: FactorResult[] }) {
+  return (
+    <Card className="flex flex-col gap-4 p-5">
+      <SectionHeading
+        title="Facteurs associés à la fertilité"
+        description="Fertilité réelle comparée selon les conditions de pollinisation. Les bornes météo sont calculées sur vos propres lots, jamais fixées à l'avance."
+      />
+      {factors.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Pas encore assez de lots avec météo, type de pollen ou suivi sanitaire pour comparer des conditions. Les comparaisons apparaissent à partir de 9 lots mesurés.
+        </p>
+      ) : (
+        <div className="divide-y divide-border">
+          {factors.map((factor) => {
+            const verdict = FACTOR_VERDICT[factor.verdict]
+            return (
+              <article key={factor.id} className="flex flex-col gap-2 py-4 first:pt-0 last:pb-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-semibold text-foreground">{factor.title}</h3>
+                  <Badge tone={verdict.tone}>{verdict.label}</Badge>
+                </div>
+                <p className="text-sm text-foreground">{factor.summary}</p>
+                <ul className="flex flex-col gap-1 text-sm">
+                  {factor.groups.map((group) => (
+                    <li key={group.label} className="flex flex-wrap items-baseline gap-x-3 text-foreground">
+                      <span className="w-48 shrink-0">{group.label}</span>
+                      <span className="font-medium">{formatRate(group.fertile)}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {group.lots} lot(s) · {rateDetail(group.fertile, "fleurs")}
+                        {group.eligible ? "" : " · groupe trop petit, non comparé"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {factor.note ? <p className="text-xs text-muted-foreground">{factor.note}</p> : null}
+              </article>
+            )
+          })}
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">
+        Ces écarts sont des associations observées sur vos données, pas des causes : d'autres conditions peuvent les expliquer.
+      </p>
     </Card>
   )
 }

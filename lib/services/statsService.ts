@@ -19,6 +19,14 @@ import {
   type CoupleFertility,
   type RateWithCI,
 } from "@/lib/services/fertilityService"
+import {
+  buildFactors,
+  motherSanitaryContext,
+  normalizeName,
+  readClimate,
+  type FactorResult,
+  type SanitaryObservation,
+} from "@/lib/services/factorService"
 
 export interface MonthlyReport {
   month: string
@@ -55,6 +63,8 @@ export interface SeasonBilan {
   parentPerformances: ParentPerformance[]
   /** Fertilité réelle par couple (mère × père), comparée aux croisements des mêmes parents. */
   couples: CoupleFertility[]
+  /** Facteurs associés à la fertilité (météo, pollen, sanitaire), seuils calculés sur les lots. */
+  factors: FactorResult[]
   overall: {
     totalCrosses: number
     totalPollinatedFlowers: number
@@ -80,6 +90,14 @@ export interface RawData {
   harvests: HarvestRow[]
   seedlings: SeedlingRow[]
   pollenLots: PollenRow[]
+  /** Contexte sanitaire de la mère ; absent ou vide => « inconnu » pour tous les lots. */
+  sanitary?: SanitaryContextData
+}
+
+export interface SanitaryContextData {
+  plantings: Array<{ id: string; variety_id: string | null }>
+  varieties: Array<{ id: string; name: string | null; commercial_name: string | null }>
+  observations: SanitaryObservation[]
 }
 
 interface CrossRow {
@@ -89,6 +107,8 @@ interface CrossRow {
   pollen_parent: string | null
   pollination_date: string | null
   flower_count: number | null
+  pollen_type?: string | null
+  climate_data?: Record<string, unknown> | null
 }
 
 interface HarvestRow {
@@ -343,6 +363,51 @@ export function buildParentPerformances(
     .sort((a, b) => b.fertilityIndex - a.fertilityIndex)
 }
 
+/** Un lot par croisement : fertilité, météo de pollinisation, type de pollen, état sanitaire de la mère. */
+export function buildFactorLots(raw: RawData) {
+  const fruitsByCross = new Map<string, HarvestRow[]>()
+  for (const h of raw.harvests) {
+    const arr = fruitsByCross.get(h.cross_id) ?? []
+    arr.push(h)
+    fruitsByCross.set(h.cross_id, arr)
+  }
+
+  // Nom normalisé de variété -> identifiants de plants de cette variété.
+  const varietyIdsByName = new Map<string, Set<string>>()
+  for (const v of raw.sanitary?.varieties ?? []) {
+    for (const label of [v.name, v.commercial_name]) {
+      const key = normalizeName(label)
+      if (!key) continue
+      const set = varietyIdsByName.get(key) ?? new Set<string>()
+      set.add(v.id)
+      varietyIdsByName.set(key, set)
+    }
+  }
+  const plantingsByVariety = new Map<string, string[]>()
+  for (const p of raw.sanitary?.plantings ?? []) {
+    if (!p.variety_id) continue
+    const arr = plantingsByVariety.get(p.variety_id) ?? []
+    arr.push(p.id)
+    plantingsByVariety.set(p.variety_id, arr)
+  }
+
+  return raw.crosses.map((c) => {
+    const climate = readClimate(c.climate_data)
+    const varietyIds = varietyIdsByName.get(normalizeName(c.seed_parent)) ?? new Set<string>()
+    const plantingIds = Array.from(varietyIds).flatMap((id) => plantingsByVariety.get(id) ?? [])
+    return {
+      id: c.id,
+      flowerCount: c.flower_count,
+      fertileFruits: (fruitsByCross.get(c.id) ?? []).filter((h) => !isEmptyFruit(h)).length,
+      pollenType: c.pollen_type ?? null,
+      temperature: climate.temperature,
+      humidity: climate.humidity,
+      uvIndex: climate.uvIndex,
+      motherSanitary: motherSanitaryContext(c.pollination_date, plantingIds, raw.sanitary?.observations ?? []),
+    }
+  })
+}
+
 export function buildSeasonBilan(raw: RawData): SeasonBilan {
   const monthlyReports = buildMonthlyReports(raw.crosses, raw.harvests, raw.seedlings)
   const parentPerformances = buildParentPerformances(raw.crosses, raw.harvests, raw.seedlings)
@@ -354,6 +419,8 @@ export function buildSeasonBilan(raw: RawData): SeasonBilan {
   const totalHarvestedFruits = raw.harvests.length
   const totalEmpty = raw.harvests.filter(isEmptyFruit).length
   const totalSeeds = raw.harvests.reduce((sum, h) => sum + h.seed_count, 0)
+
+  const factors = buildFactors(buildFactorLots(raw))
 
   const couples = buildCoupleFertility(
     raw.crosses.map((c) => ({
@@ -387,6 +454,7 @@ export function buildSeasonBilan(raw: RawData): SeasonBilan {
     monthlyReports,
     parentPerformances,
     couples,
+    factors,
     overall: {
       totalCrosses,
       totalPollinatedFlowers,
@@ -407,6 +475,60 @@ export function buildSeasonBilan(raw: RawData): SeasonBilan {
   }
 }
 
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
+
+/**
+ * Plants des mères (par nom de variété) et leurs observations. En cas d'erreur
+ * ou de données absentes, les lots restent « inconnu » : le bilan ne casse pas.
+ */
+async function fetchSanitaryContext(userId: string, crosses: CrossRow[]): Promise<SanitaryContextData> {
+  const empty: SanitaryContextData = { plantings: [], varieties: [], observations: [] }
+  try {
+    const motherNames = new Set(crosses.map((c) => normalizeName(c.seed_parent)).filter(Boolean))
+    if (motherNames.size === 0) return empty
+
+    const { data: plantingRows } = await supabase
+      .from("field_plantings")
+      .select("id, variety_id")
+      .eq("user_id", userId)
+      .not("variety_id", "is", null)
+    const plantings = (plantingRows ?? []) as SanitaryContextData["plantings"]
+    if (plantings.length === 0) return empty
+
+    const varietyIds = Array.from(new Set(plantings.map((p) => p.variety_id).filter((id): id is string => Boolean(id))))
+    const varietyChunks = await Promise.all(
+      chunk(varietyIds, 100).map((ids) => supabase.from("varieties").select("id, name, commercial_name").in("id", ids)),
+    )
+    const varieties = varietyChunks.flatMap((r) => (r.data ?? []) as SanitaryContextData["varieties"])
+
+    const plantingIds = plantings.map((p) => p.id)
+    const observationChunks = await Promise.all(
+      chunk(plantingIds, 100).map((ids) =>
+        supabase
+          .from("field_observations")
+          .select("planting_id, observation_date, disease_pressure, pests")
+          .eq("user_id", userId)
+          .in("planting_id", ids),
+      ),
+    )
+    const observations = observationChunks.flatMap((r) =>
+      ((r.data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+        plantingId: (row.planting_id as string | null) ?? null,
+        observationDate: row.observation_date as string,
+        diseasePressure: (row.disease_pressure as string[] | null) ?? null,
+        pests: (row.pests as string[] | null) ?? null,
+      })),
+    )
+    return { plantings, varieties, observations }
+  } catch {
+    return empty
+  }
+}
+
 export async function fetchRawData(): Promise<RawData> {
   // Les bilans ne portent que sur les données de l'utilisateur connecté, même si
   // une policy RLS trop large laissait voir celles des autres.
@@ -415,13 +537,16 @@ export async function fetchRawData(): Promise<RawData> {
   if (!userId) return { crosses: [], harvests: [], seedlings: [], pollenLots: [] }
 
   const [{ data: cData }, { data: hData }, { data: sData }, { data: pData }] = await Promise.all([
-    supabase.from("crosses").select("id, code, seed_parent, pollen_parent, pollination_date, flower_count").eq("user_id", userId).order("created_at", { ascending: false }),
+    supabase.from("crosses").select("id, code, seed_parent, pollen_parent, pollination_date, flower_count, pollen_type, climate_data").eq("user_id", userId).order("created_at", { ascending: false }),
     supabase.from("cross_fruits").select("id, cross_id, fruit_name, harvest_date, seed_count, seed_extraction, fruit_calibre, status").eq("user_id", userId).order("created_at", { ascending: false }),
     supabase.from("seedlings").select("id, batch_id, fruit_id, code, status, phenotype_vigueur, pression_sanitaire, traitement").eq("user_id", userId).order("created_at", { ascending: false }),
     supabase.from("pollen_lots").select("id, lot_number, rose_name, anther_quality, dehiscence").eq("user_id", userId).order("created_at", { ascending: false }),
   ])
 
+  const sanitary = await fetchSanitaryContext(userId, (cData ?? []) as CrossRow[])
+
   return {
+    sanitary,
     crosses: (cData ?? []) as CrossRow[],
     // cross_fruits est la source réelle des récoltes (une ligne par fruit,
     // Voie A/B) ; hip_harvests était l'ancienne table par lot, plus alimentée.
