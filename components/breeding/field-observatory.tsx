@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Bell, ClipboardCheck, CloudSun, Leaf, MapPin, Plus, Save, Send } from "lucide-react"
+import { Bell, ClipboardCheck, CloudSun, Leaf, MapPin, Save, Send } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, Field, Input, Select, SectionHeading, Textarea } from "./ui"
 import { supabase } from "@/lib/supabase-client"
@@ -10,20 +10,21 @@ const CHECKLISTS = {
   "Maladie / Pression sanitaire": ["Oïdium", "Mildiou", "Marsonia (Taches noires)", "Rouille", "Botrytis", "Autre"],
   "Insectes / Ravageurs": ["Pucerons", "Cochenilles", "Thrips", "Araignées rouges", "Altises", "Autre"],
   "Comportement face au climat": ["Brûlures foliaires (soleil)", "Stress hydrique (sécheresse)", "Sensibilité humidité/asphyxie", "Rétention/Chlorose", "Résistance avérée"],
-  "Type de traitement appliqué": ["Soude caustique", "Soufre", "Bouillie bordelaise", "Insecticide biologique", "Fongicide biologique", "Produit chimique de synthèse", "Autre"],
+  "Type de traitement appliqué": ["Bicarbonate de sodium", "Soufre", "Bouillie bordelaise", "Insecticide biologique", "Fongicide biologique", "Produit chimique de synthèse", "Autre"],
   "Réaction / Comportement face au traitement": ["Tolérance parfaite", "Phytotoxicité légère (jaunissement)", "Phytotoxicité forte (brûlure)", "Efficacité rapide", "Aucune efficacité"],
 } as const
 
 type Option = { id: string; label: string }
 type Weather = { id: string; date: string; location: string | null }
+type FixedLocation = { kind: "greenhouse" | "parcelle"; id: string }
 
-export function FieldObservatory() {
+export function FieldObservatory({ fixedLocation }: { fixedLocation?: FixedLocation }) {
   const [varieties, setVarieties] = useState<Option[]>([])
   const [locations, setLocations] = useState<Option[]>([])
   const [weather, setWeather] = useState<Weather[]>([])
   const [varietyId, setVarietyId] = useState("")
-  const [locationId, setLocationId] = useState("")
-  const [locationKind, setLocationKind] = useState<"greenhouse" | "parcelle">("greenhouse")
+  const [locationId, setLocationId] = useState(fixedLocation?.id ?? "")
+  const [locationKind, setLocationKind] = useState<"greenhouse" | "parcelle">(fixedLocation?.kind ?? "greenhouse")
   const [observationDate, setObservationDate] = useState(new Date().toISOString().slice(0, 10))
   const [interventionDate, setInterventionDate] = useState(new Date().toISOString().slice(0, 10))
   const [weatherId, setWeatherId] = useState("")
@@ -32,11 +33,15 @@ export function FieldObservatory() {
   const [passages, setPassages] = useState("1")
   const [result, setResult] = useState("Amélioration")
   const [saved, setSaved] = useState(false)
-  const [newLocationName, setNewLocationName] = useState("")
   const [unknownVariety, setUnknownVariety] = useState("")
   const [requestContext, setRequestContext] = useState("")
   const [requestSent, setRequestSent] = useState(false)
-  const [locationMessage, setLocationMessage] = useState("")
+
+  useEffect(() => {
+    if (!fixedLocation) return
+    setLocationId(fixedLocation.id)
+    setLocationKind(fixedLocation.kind)
+  }, [fixedLocation?.id, fixedLocation?.kind])
 
   useEffect(() => {
     async function load() {
@@ -62,19 +67,6 @@ export function FieldObservatory() {
 
   const weatherForDate = useMemo(() => weather.filter((day) => day.date === observationDate), [weather, observationDate])
   const toggle = (value: string) => setSelected((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value])
-
-  async function addLocation() {
-    const name = newLocationName.trim()
-    if (!name) return
-    const table = locationKind === "greenhouse" ? "greenhouses" : "parcelles"
-    const { data, error } = await supabase.from(table).insert({ name }).select("id, name").single()
-    if (!error && data) {
-      setLocations((current) => [...current, { id: data.id, label: `${data.name} · ${locationKind === "greenhouse" ? "Serre" : "Parcelle"}` }])
-      setLocationId(data.id)
-      setNewLocationName("")
-      setLocationMessage(`${locationKind === "greenhouse" ? "Serre" : "Parcelle"} ajoutée.`)
-    }
-  }
 
   async function submitVarietyRequest() {
     const requestedName = unknownVariety.trim()
@@ -108,23 +100,27 @@ export function FieldObservatory() {
 
   return (
     <div className="flex flex-col gap-5">
-      <SectionHeading title="Observatoire terrain" description="Saisissez un relevé rapide, toujours relié à une variété, un emplacement et la météo historique du jour." />
+      <SectionHeading title="Observatoire terrain" description="Saisissez un relevé relié à cette zone, au plant observé et à la météo historique du jour." />
       <Card className="border-primary/20 bg-card p-5 shadow-sm">
-        <div className="grid gap-4 lg:grid-cols-4">
+        <div className={fixedLocation ? "grid gap-4 lg:grid-cols-2" : "grid gap-4 lg:grid-cols-4"}>
           <Field label="Variété / semis" htmlFor="field-variety">
             <Select id="field-variety" value={varietyId} onChange={(event) => setVarietyId(event.target.value)}>
               <option value="">Sélectionner…</option>
               {varieties.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
             </Select>
           </Field>
-          <Field label="Type d'emplacement" htmlFor="field-kind">
-            <Select id="field-kind" value={locationKind} onChange={(event) => setLocationKind(event.target.value as typeof locationKind)}>
-              <option value="greenhouse">Serre</option><option value="parcelle">Parcelle</option>
-            </Select>
-          </Field>
-          <Field label="Serre / parcelle" htmlFor="field-location">
-            <Select id="field-location" value={locationId} onChange={(event) => setLocationId(event.target.value)}><option value="">Sélectionner…</option>{locations.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select>
-          </Field>
+          {!fixedLocation ? (
+            <>
+              <Field label="Zone d'observation" htmlFor="field-kind">
+                <Select id="field-kind" value={locationKind} onChange={(event) => setLocationKind(event.target.value as typeof locationKind)}>
+                  <option value="greenhouse">Serre</option><option value="parcelle">Parcelle</option>
+                </Select>
+              </Field>
+              <Field label="Serre / parcelle" htmlFor="field-location">
+                <Select id="field-location" value={locationId} onChange={(event) => setLocationId(event.target.value)}><option value="">Sélectionner…</option>{locations.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select>
+              </Field>
+            </>
+          ) : null}
           <Field label="Date d'observation" htmlFor="field-date"><Input id="field-date" type="date" value={observationDate} onChange={(event) => { setObservationDate(event.target.value); setWeatherId("") }} /></Field>
         </div>
 
@@ -143,17 +139,7 @@ export function FieldObservatory() {
         <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted-foreground"><span className="inline-flex items-center gap-1"><Leaf className="size-3.5" />Catalogue général + semis</span><span className="inline-flex items-center gap-1"><MapPin className="size-3.5" />Serres et parcelles</span><span className="inline-flex items-center gap-1"><ClipboardCheck className="size-3.5" />Observation + traitement datés</span></div>
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="p-5">
-          <SectionHeading title="Ajouter un emplacement" description="Créez une serre chaude, serre froide ou parcelle directement depuis l’observatoire." />
-          <div className="mt-4 grid gap-3 sm:grid-cols-[180px_1fr_auto] sm:items-end">
-            <Field label="Type" htmlFor="new-location-kind"><Select id="new-location-kind" value={locationKind} onChange={(event) => setLocationKind(event.target.value as typeof locationKind)}><option value="greenhouse">Serre</option><option value="parcelle">Parcelle</option></Select></Field>
-            <Field label="Nom" htmlFor="new-location-name"><Input id="new-location-name" value={newLocationName} onChange={(event) => setNewLocationName(event.target.value)} placeholder="Serre froide 02 / Parcelle Nord" /></Field>
-            <Button type="button" onClick={addLocation} disabled={!newLocationName.trim()} className="gap-2"><Plus data-icon="inline-start" />Ajouter</Button>
-          </div>
-          {locationMessage && <p className="mt-3 text-sm text-primary">{locationMessage}</p>}
-        </Card>
-
+      <div className="grid gap-5">
         <Card className="p-5">
           <SectionHeading title="Variété manquante ?" description="Une demande crée automatiquement une alerte pour l’administration du catalogue." />
           <div className="mt-4 grid gap-3">

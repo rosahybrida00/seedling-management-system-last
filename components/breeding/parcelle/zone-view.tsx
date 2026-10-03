@@ -8,14 +8,17 @@ import { Button } from "@/components/ui/button"
 import { Card, Badge, Field, Input, EmptyState, Select, SectionHeading } from "@/components/breeding/ui"
 import { formatDate } from "@/components/breeding/format"
 import { supabase } from "@/lib/supabase-client"
+import { GERMINATED_SEEDLING_STATUSES, SOIL_TYPE_LABELS } from "@/lib/domain/fieldLabels"
 import { AgendaSection } from "@/components/breeding/parcelle/agenda-section"
+import { ZoneSeedLotTracking } from "@/components/breeding/serre/seed-lot-tracking"
 import type {
   Zone, Greenhouse, GreenhouseTable, Parcelle, VarietyOption,
-  FieldPlanting, FieldProgram, FieldIntervention, FieldObservation,
+  FieldPlanting, FieldProgram, FieldIntervention, FieldObservation, SeedLot, CrossParents,
 } from "@/app/parcelle/types"
 
-export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plantingLabel, programsByPlanting, interventionsByProgram, observationsByPlanting, zonePrograms, onBack, onOpenPlant, onRefresh }: {
+export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, seedLots = [], seedLotError = null, crossMap = new Map<string, CrossParents>(), plantingLabel, programsByPlanting, interventionsByProgram, observationsByPlanting, zonePrograms, onBack, onOpenPlant, onRefresh }: {
   zone: Zone; plantings: FieldPlanting[]; greenhouses: Greenhouse[]; tables: GreenhouseTable[]; parcelles: Parcelle[]
+  seedLots?: SeedLot[]; seedLotError?: string | null; crossMap?: Map<string, CrossParents>
   plantingLabel: (p: FieldPlanting) => string
   programsByPlanting: Map<string, FieldProgram[]>; interventionsByProgram: Map<string, FieldIntervention[]>
   observationsByPlanting: Map<string, FieldObservation[]>
@@ -29,6 +32,7 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
   const [showSugg, setShowSugg] = useState(false)
   const [tableId, setTableId] = useState("")
   const [plantCount, setPlantCount] = useState("1")
+  const [createError, setCreateError] = useState<string | null>(null)
   const [soilType, setSoilType] = useState(zone.kind === "parcelle" ? (zone.parcelle.soil_type?.[0] ?? "") : "")
   const [locationType, setLocationType] = useState<"pot" | "pleine_terre">(zone.kind === "serre" ? "pot" : "pleine_terre")
   const [plantedAt, setPlantedAt] = useState(new Date().toISOString().split("T")[0])
@@ -45,7 +49,7 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
       const escaped = q.replace(/[%,()]/g, " ")
       const [{ data: v }, { data: s }] = await Promise.all([
         supabase.from("varieties").select("id,name,commercial_name,obtenteur,type,color,flowering,fragrance,parents,parentage,description,photo_url,image_url").or(`name.ilike.%${escaped}%,commercial_name.ilike.%${escaped}%,obtenteur.ilike.%${escaped}%`).limit(8),
-        supabase.from("seedlings").select("id,code,seedling_code").or(`code.ilike.%${escaped}%,seedling_code.ilike.%${escaped}%`).limit(8),
+        supabase.from("seedlings").select("id,code,seedling_code,status").in("status", [...GERMINATED_SEEDLING_STATUSES]).or(`code.ilike.%${escaped}%,seedling_code.ilike.%${escaped}%`).limit(8),
       ])
       setSuggestions([
         ...(v ?? []).map((x: any) => ({
@@ -72,18 +76,31 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
   async function createPlanting() {
     if (!selected) return
     if (zone.kind === "serre" && !tableId) return
-    const { error } = await supabase.from("field_plantings").insert({
-      variety_id: selected.source === "catalogue" ? selected.id : null,
-      seedling_id: selected.source === "semis" ? selected.id : null,
-      greenhouse_table_id: zone.kind === "serre" ? tableId : null,
-      parcelle_id: zone.kind === "parcelle" ? zone.parcelle.id : null,
-      planted_at: plantedAt,
-      plant_count: Math.max(1, Number.parseInt(plantCount, 10) || 1),
-      soil_type: soilType.trim() || null,
-      location_type: locationType,
-      notes: notes.trim(),
-    })
-    if (error) { alert(`Erreur : ${error.message}`); return }
+    setCreateError(null)
+    const individualCount = selected.source === "semis" ? 1 : Math.min(500, Math.max(1, Number.parseInt(plantCount, 10) || 1))
+    const groupId = crypto.randomUUID()
+    const { error } = await supabase.from("field_plantings").insert(
+      Array.from({ length: individualCount }, (_, index) => ({
+        variety_id: selected.source === "catalogue" ? selected.id : null,
+        seedling_id: selected.source === "semis" ? selected.id : null,
+        greenhouse_table_id: zone.kind === "serre" ? tableId : null,
+        parcelle_id: zone.kind === "parcelle" ? zone.parcelle.id : null,
+        group_id: groupId,
+        individual_number: index + 1,
+        planted_at: plantedAt,
+        plant_count: 1,
+        soil_type: locationType === "pleine_terre" ? soilType || null : null,
+        container_type: locationType === "pot" ? "Terreau" : null,
+        location_type: locationType,
+        notes: notes.trim(),
+      }))
+    )
+    if (error) {
+      setCreateError(error.code === "42703" || error.code === "PGRST204"
+        ? "Exécutez la migration 028 dans Supabase avant l'enregistrement des individus."
+        : `Enregistrement impossible : ${error.message}`)
+      return
+    }
     setQuery(""); setSelected(null); setTableId(""); setPlantCount("1"); setNotes(""); setCreating(false)
     onRefresh()
   }
@@ -98,6 +115,7 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
 
       {creating ? (
         <Card className="p-4">
+          {createError ? <p role="alert" className="mb-3 text-sm text-destructive">{createError}</p> : null}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="relative">
               <Field label="Variété (Catalogue ou Semis)">
@@ -106,7 +124,7 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
               {showSugg && suggestions.length > 0 ? (
                 <div className="absolute z-50 mt-1 max-h-80 w-full overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-lg">
                   {suggestions.map((s) => (
-                    <button key={`${s.source}-${s.id}`} type="button" className="flex w-full gap-3 rounded-md p-2 text-left hover:bg-accent" onClick={() => { setSelected(s); setShowSugg(false) }}>
+                    <button key={`${s.source}-${s.id}`} type="button" className="flex w-full gap-3 rounded-md p-2 text-left hover:bg-accent" onClick={() => { setSelected(s); if (s.source === "semis") setPlantCount("1"); setShowSugg(false) }}>
                       {s.photoUrl ? <img src={s.photoUrl} alt="" className="size-14 rounded-md object-cover" /> : <div className="flex size-14 items-center justify-center rounded-md bg-primary/10"><Sprout className="size-5 text-primary" /></div>}
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-2"><span className="truncate text-sm font-medium text-foreground">{s.name}</span><Badge tone={s.source === "catalogue" ? "primary" : "neutral"}>{s.source === "catalogue" ? "Catalogue" : "Semis"}</Badge></span>
@@ -139,25 +157,26 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
             ) : null}
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <Field label="Type d'emplacement">
-                <div className="flex gap-4 pt-1">
-                  <label className="flex items-center gap-1.5 text-sm text-foreground">
-                    <input type="checkbox" checked={locationType === "pot"} onChange={() => setLocationType("pot")} />
-                    Conteneur / Pot
-                  </label>
-                  <label className="flex items-center gap-1.5 text-sm text-foreground">
-                    <input type="checkbox" checked={locationType === "pleine_terre"} onChange={() => setLocationType("pleine_terre")} />
-                    Pleine terre
-                  </label>
-                </div>
+            <Field label="Implantation">
+              <Select value={locationType} onChange={(event) => setLocationType(event.target.value as typeof locationType)}>
+                <option value="pot">Pot · substrat terreau</option>
+                <option value="pleine_terre">Pleine terre</option>
+              </Select>
+            </Field>
+            {locationType === "pleine_terre" ? (
+              <Field label="Type de sol">
+                <Select value={soilType} onChange={(event) => setSoilType(event.target.value)}>
+                  <option value="">Choisir un type de sol</option>
+                  {Object.entries(SOIL_TYPE_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                </Select>
               </Field>
-            </div>
+            ) : (
+              <Field label="Substrat"><Input value="Terreau" readOnly /></Field>
+            )}
             <Field label={locationType === "pot" ? "Nombre de pots" : "Nombre de plants"}>
-              <Input type="number" min="1" value={plantCount} onChange={(e) => setPlantCount(e.target.value)} />
+              <Input type="number" min="1" max="500" value={plantCount} disabled={selected?.source === "semis"} onChange={(e) => setPlantCount(e.target.value)} />
             </Field>
             <Field label="Date d'ajout"><Input type="date" value={plantedAt} onChange={(e) => setPlantedAt(e.target.value)} /></Field>
-            <Field label={zone.kind === "parcelle" ? "Type de sol" : "Type de sol / substrat"}><Input value={soilType} onChange={(e) => setSoilType(e.target.value)} placeholder="Ex. terre argileuse, terreau" /></Field>
             <div className="sm:col-span-2"><Field label="Note initiale"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Observation à l'installation" /></Field></div>
           </div>
           <div className="mt-3 flex justify-end gap-2">
@@ -180,7 +199,9 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
                   {alert ? <span className="size-2 rounded-full bg-destructive" /> : null}
                   <Sprout className="size-4 text-primary" />
                   <span className="text-sm font-medium">{plantingLabel(p)}</span>
-                  {p.location_type ? <Badge tone="neutral">{p.location_type === "pot" ? "Pot" : "Pleine terre"}</Badge> : null}
+                  {p.individual_number ? <Badge tone="neutral">Lot {p.group_id?.slice(0, 6).toUpperCase()} · Individu {p.individual_number}</Badge> : null}
+                  {p.greenhouse_table_id ? <Badge tone="neutral">{tables.find((table) => table.id === p.greenhouse_table_id)?.name ?? "Table"}</Badge> : null}
+                  {p.container_type ? <Badge tone="neutral">{p.container_type}</Badge> : p.location_type ? <Badge tone="neutral">{p.location_type === "pot" ? "Pot" : "Pleine terre"}</Badge> : null}
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Planté le {formatDate(p.planted_at)}{p.plant_count ? ` · ${p.plant_count} ${p.location_type === "pot" ? "pot(s)" : "plant(s)"}` : ""}
@@ -192,9 +213,17 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, plan
         </div>
       )}
 
+      <ZoneSeedLotTracking zone={zone} batches={seedLots} loadError={seedLotError} crossMap={crossMap} greenhouses={greenhouses} tables={tables} parcelles={parcelles} onRefresh={onRefresh} />
+
       <SectionHeading title="Programme collectif de la zone" description="Traitement ou fertilisation appliqué à toute la serre/parcelle, en plus des programmes propres à chaque variété." />
       <AgendaSection
         target={zone.kind === "serre" ? { greenhouse_id: zone.greenhouse.id } : { parcelle_id: zone.parcelle.id }}
+        locationSnapshot={{
+          greenhouse_id: zone.kind === "serre" ? zone.greenhouse.id : null,
+          greenhouse_table_id: null,
+          parcelle_id: zone.kind === "parcelle" ? zone.parcelle.id : null,
+        }}
+        observations={plantings.flatMap((planting) => observationsByPlanting.get(planting.id) ?? []).sort((left, right) => right.observation_date.localeCompare(left.observation_date))}
         programs={zonePrograms}
         interventionsByProgram={interventionsByProgram}
         onRefresh={onRefresh}

@@ -10,13 +10,15 @@ import { supabase } from "@/lib/supabase-client"
 import { SOIL_TYPE_LABELS } from "@/lib/domain/fieldLabels"
 import type { Greenhouse, GreenhouseTable, Parcelle } from "@/app/parcelle/types"
 
-export function ManageView({ greenhouses, tables, parcelles, onBack, onRefresh }: {
-  greenhouses: Greenhouse[]; tables: GreenhouseTable[]; parcelles: Parcelle[]; onBack: () => void; onRefresh: () => void
+export function ManageView({ greenhouses, tables, parcelles, initialSubTab = "serres", openCreateParcelle = false, onBack, onRefresh }: {
+  greenhouses: Greenhouse[]; tables: GreenhouseTable[]; parcelles: Parcelle[]
+  initialSubTab?: "serres" | "parcelles"; openCreateParcelle?: boolean
+  onBack: () => void; onRefresh: () => void
 }) {
-  const [subTab, setSubTab] = useState<"serres" | "parcelles">("serres")
+  const [subTab, setSubTab] = useState<"serres" | "parcelles">(initialSubTab)
   const [newGreenhouse, setNewGreenhouse] = useState("")
   const [newTableName, setNewTableName] = useState<Record<string, string>>({})
-  const [creatingParcelle, setCreatingParcelle] = useState(false)
+  const [creatingParcelle, setCreatingParcelle] = useState(openCreateParcelle)
   const [pName, setPName] = useState("")
   const [pLocation, setPLocation] = useState("")
   const [pSoil, setPSoil] = useState<string[]>([])

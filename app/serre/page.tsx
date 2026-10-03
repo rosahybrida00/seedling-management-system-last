@@ -1,10 +1,11 @@
 "use client"
 
 import { useEffect, useState, useMemo } from "react"
-import { Search, Download, Trash2, Sprout, Leaf, Warehouse, Table2, Pencil, Check, X, FileText, ArrowUpCircle, BookmarkPlus, Plus } from "lucide-react"
+import { Search, Download, Trash2, Sprout, Leaf, Warehouse, Table2, Pencil, Check, X, FileText, ArrowUpCircle, BookmarkPlus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AppShell } from "@/components/layout/app-shell"
 import { supabase } from "@/lib/supabase-client"
+import { GERMINATED_SEEDLING_STATUSES } from "@/lib/domain/fieldLabels"
 import { Card, Badge, EmptyState, Field, Input, Select, SectionHeading, Textarea } from "@/components/breeding/ui"
 import { formatDate } from "@/components/breeding/format"
 import {
@@ -15,8 +16,7 @@ import {
   CRITERE_SELECTION_LABELS,
 } from "@/lib/domain/supabase-types"
 import type { Seedling } from "@/lib/domain/supabase-types"
-import { FieldObservatory } from "@/components/breeding/field-observatory"
-import { SeedLotTracking } from "@/components/breeding/serre/seed-lot-tracking"
+import { ZoneWorkspace } from "@/components/breeding/parcelle/zone-workspace"
 
 // ---------------------------------------------------------------------------
 // Un semis (seedling) porte désormais directement `cross_id`, `fruit_code`,
@@ -48,6 +48,8 @@ interface SowingBatch {
   original_seed_count: number | null
   sprouted_count: number | null
   table_id: string | null
+  parcelle_id: string | null
+  location_type: "pot" | "pleine_terre" | null
   notes: string | null
   substrate: string | null
   stratification: string | null
@@ -78,24 +80,31 @@ const EVALUATION_STATUS_TONES: Record<string, "neutral" | "primary" | "warning" 
   "Éliminé": "danger",
 }
 
-// Correspondance avec l'ancien champ `status`, conservé pour ne pas casser
-// les filtres/exports existants pendant la transition.
-const EVALUATION_TO_LEGACY_STATUS: Record<string, Seedling["status"]> = {
-  "Évaluation": "observing",
-  "Sélectionné": "selected",
-  "Éliminé": "discarded",
-}
-
 function legacyStatusToEvaluation(status: Seedling["status"]): string {
-  if (status === "selected") return "Sélectionné"
-  if (status === "discarded") return "Éliminé"
+  if (status === "selected" || status === "Retenu") return "Sélectionné"
+  if (status === "discarded" || status === "Écarté" || status === "Mort") return "Éliminé"
   return "Évaluation"
 }
 
 export default function SerrePage() {
+  const [activeView, setActiveView] = useState<"zones" | "catalogue">("zones")
+
   return (
     <AppShell>
-      <SerreContent />
+      <div className="flex flex-col gap-5">
+        <div className="flex gap-1 border-b border-border" role="tablist" aria-label="Vues Serres et Parcelles">
+          <button type="button" role="tab" aria-selected={activeView === "zones"} aria-controls="zones-panel" onClick={() => setActiveView("zones")}
+            className={activeView === "zones" ? "border-b-2 border-primary px-4 py-2 text-sm font-medium text-primary" : "px-4 py-2 text-sm text-muted-foreground hover:text-foreground"}>
+            Serres &amp; Parcelles
+          </button>
+          <button type="button" role="tab" aria-selected={activeView === "catalogue"} aria-controls="catalogue-panel" onClick={() => setActiveView("catalogue")}
+            className={activeView === "catalogue" ? "border-b-2 border-primary px-4 py-2 text-sm font-medium text-primary" : "px-4 py-2 text-sm text-muted-foreground hover:text-foreground"}>
+            Catalogue des Semis
+          </button>
+        </div>
+        {activeView === "zones" ? <div id="zones-panel" role="tabpanel"><ZoneWorkspace /></div> : null}
+        {activeView === "catalogue" ? <div id="catalogue-panel" role="tabpanel"><SerreContent /></div> : null}
+      </div>
     </AppShell>
   )
 }
@@ -112,8 +121,6 @@ function SerreContent() {
   const [greenhouseFilter, setGreenhouseFilter] = useState("")
   const [editingId, setEditingId] = useState<string | null>(null)
   const [collectionIds, setCollectionIds] = useState<Set<string>>(new Set())
-  const [newGreenhouseName, setNewGreenhouseName] = useState("")
-  const [greenhouseError, setGreenhouseError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchData()
@@ -122,7 +129,7 @@ function SerreContent() {
   async function fetchData() {
     setLoading(true)
     const [seed, bat, cr, tbl, gh] = await Promise.all([
-      supabase.from("seedlings").select("*").order("code"),
+      supabase.from("seedlings").select("*").in("status", [...GERMINATED_SEEDLING_STATUSES]).order("code"),
       supabase.from("sowing_batches").select("*").order("sowing_date", { ascending: false }),
       supabase.from("crosses").select("id, seed_parent, pollen_parent, base_syllable"),
       supabase.from("greenhouse_tables").select("id, greenhouse_id, name").order("name"),
@@ -212,21 +219,12 @@ function SerreContent() {
     })
   }, [seedlings, query, statusFilter, greenhouseFilter, crossMap, batchByFruit, batchById, tableMap])
 
-  async function createGreenhouse() {
-    const name = newGreenhouseName.trim()
-    if (!name) return
-    setGreenhouseError(null)
-    const { error } = await supabase.from("greenhouses").insert({ name })
+  async function updateSeedling(s: Seedling, changes: Partial<Seedling>) {
+    const { error } = await supabase.from("seedlings").update(changes).eq("id", s.id)
     if (error) {
-      setGreenhouseError(`Enregistrement impossible : ${error.message}`)
+      alert(`Enregistrement du semis impossible : ${error.message}`)
       return
     }
-    setNewGreenhouseName("")
-    await fetchData()
-  }
-
-  async function updateSeedling(s: Seedling, changes: Partial<Seedling>) {
-    await supabase.from("seedlings").update(changes).eq("id", s.id)
     fetchData()
   }
 
@@ -302,45 +300,6 @@ function SerreContent() {
 
   return (
     <div className="flex flex-col gap-5">
-      <FieldObservatory />
-      <Card className="flex flex-wrap items-end gap-3 p-4">
-        <Field label="Nouvelle serre" htmlFor="new-greenhouse-name">
-          <Input
-            id="new-greenhouse-name"
-            value={newGreenhouseName}
-            onChange={(e) => setNewGreenhouseName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) createGreenhouse()
-            }}
-            placeholder="Serre nord"
-            className="w-64"
-          />
-        </Field>
-        <Button onClick={createGreenhouse} disabled={!newGreenhouseName.trim()} className="gap-1.5">
-          <Plus className="size-4" data-icon="inline-start" /> Ajouter la serre
-        </Button>
-        {greenhouseError ? <p className="basis-full text-sm text-destructive">{greenhouseError}</p> : null}
-      </Card>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {greenhouses.map((greenhouse) => {
-          const plantCount = seedlings.filter((seedling) => seedlingGreenhouseId(seedling) === greenhouse.id).length
-          return (
-            <Card key={greenhouse.id} className="p-4">
-              <div className="flex items-center gap-3">
-                <span className="flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Warehouse className="size-5" />
-                </span>
-                <div>
-                  <h2 className="font-serif text-lg text-foreground">{greenhouse.name}</h2>
-                  <p className="text-sm text-muted-foreground">{plantCount} plant(s) · {tables.filter((table) => table.greenhouse_id === greenhouse.id).length} table(s)</p>
-                </div>
-              </div>
-            </Card>
-          )
-        })}
-      </div>
-      <SeedLotTracking batches={batches} crossMap={crossMap} onRefresh={fetchData} />
-
       <SectionHeading
         title="Catalogue des Semis"
         description="Évaluation des individus issus des graines récoltées : phénotype, pression sanitaire, sélection et synthèse automatique. Indépendant du Catalogue Général."
@@ -381,7 +340,7 @@ function SerreContent() {
         <EmptyState
           icon={<Sprout className="size-8" />}
           title="Aucun semis trouvé"
-          description="Les semis apparaissent ici automatiquement dès qu'un fruit est récolté sur la page Croisement."
+          description="Les graines récoltées restent dans leur lot. Une fiche apparaît ici uniquement après validation de sa levée dans une serre ou une parcelle."
         />
       ) : (
         <div className="grid gap-4">
@@ -453,6 +412,7 @@ function SeedlingCard({
     traitement: seedling.traitement ?? "",
     motif_elimination: seedling.motif_elimination ?? "",
     critere_selection: seedling.critere_selection ?? "",
+    photo_url: seedling.photo_url ?? "",
     remarks: seedling.remarks,
     free_notes: seedling.free_notes ?? "",
     automatic_synthesis: seedling.auto_report ?? "",
@@ -478,12 +438,12 @@ function SeedlingCard({
     const synthesis = draft.automatic_synthesis || generateSynthesis()
     onSave({
       evaluation_status: draft.evaluation_status as Seedling["evaluation_status"],
-      status: EVALUATION_TO_LEGACY_STATUS[draft.evaluation_status] ?? "observing",
       phenotype_vigueur: draft.phenotype_vigueur || null,
       pression_sanitaire: draft.pression_sanitaire || null,
       traitement: draft.traitement || null,
       motif_elimination: draft.motif_elimination || null,
       critere_selection: draft.critere_selection || null,
+      photo_url: draft.photo_url.trim() || null,
       remarks: draft.remarks,
       free_notes: draft.free_notes || null,
       auto_report: synthesis,
@@ -512,6 +472,9 @@ function SeedlingCard({
         </div>
 
         <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Field label="Photo du semis (URL)">
+            <Input type="url" value={draft.photo_url} onChange={(e) => setDraft({ ...draft, photo_url: e.target.value })} placeholder="https://…" />
+          </Field>
           <Field label="Statut d'évaluation">
             <Select value={draft.evaluation_status} onChange={(e) => setDraft({ ...draft, evaluation_status: e.target.value })}>
               <option value="Évaluation">En évaluation</option>
@@ -593,6 +556,7 @@ function SeedlingCard({
   return (
     <Card className="overflow-hidden transition-shadow hover:shadow-md">
       <div className="flex items-center gap-3 p-3">
+        {seedling.photo_url ? <img src={seedling.photo_url} alt={`Photo de ${displayCode}`} className="size-14 rounded-md object-cover" /> : null}
         <span className="flex size-9 items-center justify-center rounded-md bg-primary/10 text-primary">
           <Leaf className="size-4" />
         </span>

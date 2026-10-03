@@ -7,6 +7,7 @@ import { AppShell } from "@/components/layout/app-shell"
 import { Card, Badge, SectionHeading, EmptyState } from "@/components/breeding/ui"
 import { supabase } from "@/lib/supabase-client"
 import { fetchSeasonBilan, type SeasonBilan, type ParentPerformance } from "@/lib/services/statsService"
+import { fetchRuleBilan, type RuleBilan, type RuleFinding } from "@/lib/services/ruleEngine"
 import { generateDhoPdf } from "@/lib/services/dhoExport"
 import {
   PRESSION_SANITAIRE_LABELS,
@@ -23,6 +24,7 @@ export default function BilansPage() {
 
 function BilansContent() {
   const [bilan, setBilan] = useState<SeasonBilan | null>(null)
+  const [ruleBilan, setRuleBilan] = useState<RuleBilan | null>(null)
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
 
@@ -32,8 +34,9 @@ function BilansContent() {
 
   async function fetchBilan() {
     setLoading(true)
-    const data = await fetchSeasonBilan()
+    const [data, rules] = await Promise.all([fetchSeasonBilan(), fetchRuleBilan()])
     setBilan(data)
+    setRuleBilan(rules)
     setLoading(false)
   }
 
@@ -76,12 +79,13 @@ function BilansContent() {
       <div className="flex flex-col gap-5">
         <SectionHeading
           title="Bilans & Statistiques"
-          description="Calculs de performance, taux de nouaison, bilans sanitaires et exportation DHO."
+          description="Calculs statistiques et règles expertes explicables sur vos historiques structurés."
         />
+        <RuleBilanPanel report={ruleBilan} />
         <EmptyState
           icon={<BarChart3 className="size-8" />}
-          title="Aucune donnée à analyser"
-          description="Enregistrez des croisements, des récoltes et des évaluations de semis pour générer vos bilans statistiques."
+          title="Aucune donnée de croisement à analyser"
+          description="Les règles expertes restent disponibles à partir des observations, interventions, graines et données météo structurées."
         />
       </div>
     )
@@ -91,13 +95,15 @@ function BilansContent() {
     <div className="flex flex-col gap-5">
       <SectionHeading
         title="Bilans & Statistiques"
-        description="Calculs de performance, taux de nouaison, bilans sanitaires et exportation DHO."
+        description="Calculs statistiques et règles expertes explicables sur vos historiques structurés."
         action={
           <Button onClick={handleDhoExport} disabled={exporting} className="gap-1.5">
             <FileText className="size-4" /> {exporting ? "Génération..." : "Exporter DHO (PDF)"}
           </Button>
         }
       />
+
+      <RuleBilanPanel report={ruleBilan} />
 
       {/* KPIs globaux */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -294,6 +300,41 @@ function BilansContent() {
         )}
       </Card>
     </div>
+  )
+}
+
+function RuleBilanPanel({ report }: { report: RuleBilan | null }) {
+  return (
+    <Card className="flex flex-col gap-4 p-5">
+      <SectionHeading title="Moteur expert déterministe" description="Règles fixes, seuils affichés et preuves issues des seules données structurées." />
+      {!report ? <p className="text-sm text-muted-foreground">Chargement des faits structurés…</p> : null}
+      {report?.warning ? <p role="alert" className="text-sm text-destructive">{report.warning}</p> : null}
+      {report && !report.warning ? (
+        <>
+          <p className="text-xs text-muted-foreground">{report.recordsAnalyzed} faits structurés évalués. Les notes libres ne sont pas lues par ces règles.</p>
+          <div className="divide-y divide-border">
+            {report.findings.map((finding) => <RuleFindingRow key={finding.id} finding={finding} />)}
+          </div>
+        </>
+      ) : null}
+    </Card>
+  )
+}
+
+function RuleFindingRow({ finding }: { finding: RuleFinding }) {
+  return (
+    <article className="flex flex-col gap-2 py-4 first:pt-0 last:pb-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={finding.severity === "warning" ? "warning" : "neutral"}>{finding.severity === "warning" ? "À vérifier" : "Information"}</Badge>
+        <Badge tone="neutral">Règle · {finding.id}</Badge>
+        <h3 className="text-sm font-semibold text-foreground">{finding.title}</h3>
+      </div>
+      <p className="text-sm text-foreground">{finding.finding}</p>
+      <p className="text-sm text-muted-foreground">Action suggérée : {finding.recommendation}</p>
+      <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {finding.evidence.map((item) => <li key={item}>{item}</li>)}
+      </ul>
+    </article>
   )
 }
 

@@ -11,6 +11,7 @@ import { Card, Badge, EmptyState } from "@/components/breeding/ui"
 import { formatDate } from "@/components/breeding/format"
 import { detectTraitsFromDescription, resolveTrait } from "@/lib/domain/description-traits"
 import { VarietyEditModal } from "@/components/breeding/variety-edit-modal"
+import { VarietyCrossHistory } from "@/components/breeding/croisement/variety-cross-history"
 import type { VarietyRecord } from "@/app/page"
 
 interface VarietyPhoto {
@@ -245,6 +246,8 @@ export default function VarietyDetailPage() {
                   <p className="mt-1 text-sm italic text-foreground">{variety.parents}</p>
                 </Card>
               ) : null}
+
+              <VarietyCrossHistory varietyId={variety.id} />
 
               {variety.description ? (
                 <Card className="mt-3 p-4">

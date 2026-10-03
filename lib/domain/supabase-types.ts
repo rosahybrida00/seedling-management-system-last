@@ -197,7 +197,8 @@ export interface Seedling {
   batch_id: string | null
   index: number | null
   code: string
-  status: "observing" | "discarded" | "selected"
+  photo_url: string | null
+  status: "Semé" | "Stratifié" | "Germé" | "Repiqué" | "En croissance" | "Floraison" | "Retenu" | "Écarté" | "Mort" | "observing" | "discarded" | "selected"
   remarks: string
   phenotype_vigueur: string | null
   pression_sanitaire: string | null

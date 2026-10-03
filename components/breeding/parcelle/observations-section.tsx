@@ -15,7 +15,13 @@ import {
 import { getWeatherForDate, type DailyWeather } from "@/lib/services/weatherService"
 import type { FieldObservation } from "@/app/parcelle/types"
 
-export function ObservationsSection({ plantingId, observations, onRefresh }: { plantingId: string; observations: FieldObservation[]; onRefresh: () => void }) {
+export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId, observations, onRefresh }: {
+  plantingId: string
+  greenhouseTableId: string | null
+  parcelleId: string | null
+  observations: FieldObservation[]
+  onRefresh: () => void
+}) {
   const [creating, setCreating] = useState(false)
   const [observationDate, setObservationDate] = useState(new Date().toISOString().split("T")[0])
   const [interventionDate, setInterventionDate] = useState("")
@@ -26,8 +32,22 @@ export function ObservationsSection({ plantingId, observations, onRefresh }: { p
   const [reaction, setReaction] = useState<string[]>([])
   const [remarque, setRemarque] = useState("")
   const [weather, setWeather] = useState<DailyWeather | null>(null)
+  const [weatherDailyId, setWeatherDailyId] = useState<string | null>(null)
 
-  useEffect(() => { if (creating) getWeatherForDate(observationDate).then(setWeather) }, [creating, observationDate])
+  useEffect(() => {
+    if (!creating) return
+    let cancelled = false
+    async function loadWeather() {
+      const dailyWeather = await getWeatherForDate(observationDate)
+      if (cancelled) return
+      setWeather(dailyWeather)
+      if (!dailyWeather) { setWeatherDailyId(null); return }
+      const { data } = await supabase.from("weather_daily").select("id").eq("date", observationDate).maybeSingle()
+      if (!cancelled) setWeatherDailyId(data?.id ?? null)
+    }
+    loadWeather()
+    return () => { cancelled = true }
+  }, [creating, observationDate])
 
   function toggle(setter: (fn: (cur: string[]) => string[]) => void, key: string) {
     setter((cur) => (cur.includes(key) ? cur.filter((c) => c !== key) : [...cur, key]))
@@ -37,6 +57,9 @@ export function ObservationsSection({ plantingId, observations, onRefresh }: { p
     const { error } = await supabase.from("field_observations").insert({
       planting_id: plantingId, observation_date: observationDate, intervention_date: interventionDate || null,
       disease_pressure: disease, pests, climate_behavior: climate, treatment_applied: treatment, treatment_reaction: reaction, remarque,
+      weather_daily_id: weatherDailyId,
+      greenhouse_table_id: greenhouseTableId,
+      parcelle_id: parcelleId,
     })
     if (error) { alert(`Erreur : ${error.message}`); return }
     setDisease([]); setPests([]); setClimate([]); setTreatment([]); setReaction([]); setRemarque(""); setInterventionDate(""); setCreating(false)
@@ -97,6 +120,9 @@ export function ObservationsSection({ plantingId, observations, onRefresh }: { p
                 {o.climate_behavior.map((k) => <Badge key={k} tone="warning">{CLIMATE_BEHAVIOR_LABELS[k] ?? k}</Badge>)}
                 {o.treatment_applied.map((k) => <Badge key={k} tone="primary">{FIELD_TREATMENT_LABELS[k] ?? k}</Badge>)}
                 {o.treatment_reaction.map((k) => <Badge key={k} tone="neutral">{TREATMENT_REACTION_LABELS[k] ?? k}</Badge>)}
+                {o.weather_daily?.temperature != null ? <Badge tone="neutral">{Math.round(o.weather_daily.temperature)}°C</Badge> : null}
+                {o.weather_daily?.humidity != null ? <Badge tone="neutral">{Math.round(o.weather_daily.humidity)}% hum.</Badge> : null}
+                {o.weather_daily?.uv_index != null ? <Badge tone="neutral">UV {Math.round(o.weather_daily.uv_index)}</Badge> : null}
               </div>
               {o.remarque ? <p className="mt-1 italic text-muted-foreground">{o.remarque}</p> : null}
             </Card>

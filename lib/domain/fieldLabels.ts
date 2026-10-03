@@ -20,6 +20,16 @@ export const STRATIFICATION_METHOD_LABELS: Record<string, string> = {
   aucune: "Aucune stratification",
 }
 
+export const GERMINATED_SEEDLING_STATUSES = [
+  "Germé",
+  "Repiqué",
+  "En croissance",
+  "Floraison",
+  "Retenu",
+  "Écarté",
+  "Mort",
+] as const
+
 export const DISEASE_PRESSURE_LABELS: Record<string, string> = {
   oidium: "Oïdium",
   mildiou: "Mildiou",
@@ -47,13 +57,21 @@ export const CLIMATE_BEHAVIOR_LABELS: Record<string, string> = {
 }
 
 export const FIELD_TREATMENT_LABELS: Record<string, string> = {
-  soude_caustique: "Soude caustique",
+  bicarbonate_sodium: "Bicarbonate de sodium",
   soufre: "Soufre",
   bouillie_bordelaise: "Bouillie bordelaise",
   insecticide_bio: "Insecticide biologique",
   fongicide_bio: "Fongicide biologique",
+  remede_phytotherapeutique: "Remède phytothérapeutique traditionnel",
   chimique_synthese: "Produit chimique de synthèse",
   autre_traitement: "Autre",
+}
+
+export const FERTILIZER_LABELS: Record<string, string> = {
+  compost_mur: "Compost mûr",
+  fumier_composte: "Fumier composté",
+  engrais_rosiers: "Engrais organique pour rosiers",
+  amendement_humifere: "Amendement humifère",
 }
 
 export const TREATMENT_REACTION_LABELS: Record<string, string> = {
