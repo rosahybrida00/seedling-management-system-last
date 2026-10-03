@@ -8,6 +8,7 @@ import { Card, Badge, SectionHeading, EmptyState } from "@/components/breeding/u
 import { supabase } from "@/lib/supabase-client"
 import { fetchSeasonBilan, type SeasonBilan, type ParentPerformance } from "@/lib/services/statsService"
 import { fetchRuleBilan, type RuleBilan, type RuleFinding } from "@/lib/services/ruleEngine"
+import type { CoupleFertility, PeerReference, RateWithCI, Verdict } from "@/lib/services/fertilityService"
 import { generateDhoPdf } from "@/lib/services/dhoExport"
 import {
   PRESSION_SANITAIRE_LABELS,
@@ -103,10 +104,8 @@ function BilansContent() {
         }
       />
 
-      <RuleBilanPanel report={ruleBilan} />
-
-      {/* KPIs globaux */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {/* KPIs globaux : chaque taux affiche son effectif et son intervalle de confiance */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard
           icon={<Flower2 className="size-5" />}
           label="Croisements"
@@ -121,15 +120,24 @@ function BilansContent() {
         />
         <KpiCard
           icon={<TrendingUp className="size-5" />}
-          label="Taux de nouaison"
-          value={`${o!.overallNouaisonRate}%`}
-          tone={o!.overallNouaisonRate >= 50 ? "success" : "warning"}
+          label="Nouaison"
+          value={formatRate(o!.nouaison)}
+          detail={rateDetail(o!.nouaison, "fleurs")}
+          tone="primary"
         />
         <KpiCard
           icon={<TrendingDown className="size-5" />}
-          label="Taux de vacuité"
-          value={`${o!.overallVacuiteRate}%`}
-          tone={o!.overallVacuiteRate <= 20 ? "success" : "danger"}
+          label="Vacuité"
+          value={formatRate(o!.vacuite)}
+          detail={rateDetail(o!.vacuite, "fruits")}
+          tone="accent"
+        />
+        <KpiCard
+          icon={<Sprout className="size-5" />}
+          label="Fertilité réelle"
+          value={formatRate(o!.fertile)}
+          detail={rateDetail(o!.fertile, "fleurs")}
+          tone="primary"
         />
       </div>
 
@@ -159,6 +167,8 @@ function BilansContent() {
           tone="danger"
         />
       </div>
+
+      <CoupleRanking couples={bilan!.couples} />
 
       {/* Bilan mensuel */}
       <Card className="p-5">
@@ -287,7 +297,6 @@ function BilansContent() {
                   <th className="py-2 pr-4">Graines/fruit</th>
                   <th className="py-2 pr-4">Semis</th>
                   <th className="py-2 pr-4">Sélect.</th>
-                  <th className="py-2 pr-4">Index fert.</th>
                 </tr>
               </thead>
               <tbody>
@@ -299,6 +308,8 @@ function BilansContent() {
           </div>
         )}
       </Card>
+
+      <RuleBilanPanel report={ruleBilan} />
     </div>
   )
 }
@@ -306,7 +317,7 @@ function BilansContent() {
 function RuleBilanPanel({ report }: { report: RuleBilan | null }) {
   return (
     <Card className="flex flex-col gap-4 p-5">
-      <SectionHeading title="Moteur expert déterministe" description="Règles fixes, seuils affichés et preuves issues des seules données structurées." />
+      <SectionHeading title="Alertes à vérifier (règles provisoires)" description="Règles à seuils fixes, en cours de remplacement par des comparaisons calculées sur vos propres données." />
       {!report ? <p className="text-sm text-muted-foreground">Chargement des faits structurés…</p> : null}
       {report?.warning ? <p role="alert" className="text-sm text-destructive">{report.warning}</p> : null}
       {report && !report.warning ? (
@@ -350,7 +361,8 @@ function ParentRow({ perf }: { perf: ParentPerformance }) {
       <td className="py-2.5 pr-4 text-foreground">{perf.crossesCount}</td>
       <td className="py-2.5 pr-4 text-foreground">{perf.fruitsHarvested}</td>
       <td className="py-2.5 pr-4">
-        <Badge tone={perf.nouaisonRate >= 50 ? "success" : "warning"}>{perf.nouaisonRate}%</Badge>
+        <span className="font-medium text-foreground">{formatRate(perf.nouaison)}</span>
+        <span className="block text-xs text-muted-foreground">{rateDetail(perf.nouaison, "fleurs")}</span>
       </td>
       <td className="py-2.5 pr-4">
         <Badge tone={perf.vacuiteRate <= 20 ? "success" : "danger"}>{perf.vacuiteRate}%</Badge>
@@ -358,9 +370,6 @@ function ParentRow({ perf }: { perf: ParentPerformance }) {
       <td className="py-2.5 pr-4 text-foreground">{perf.avgSeedCount}</td>
       <td className="py-2.5 pr-4 text-foreground">{perf.totalSeedlings}</td>
       <td className="py-2.5 pr-4 text-foreground">{perf.selectedSeedlings}</td>
-      <td className="py-2.5 pr-4">
-        <span className="font-medium text-primary">{perf.fertilityIndex}/100</span>
-      </td>
     </tr>
   )
 }
@@ -369,11 +378,13 @@ function KpiCard({
   icon,
   label,
   value,
+  detail,
   tone,
 }: {
   icon: React.ReactNode
   label: string
   value: string | number
+  detail?: string
   tone: "primary" | "accent" | "success" | "warning" | "danger"
 }) {
   const toneClasses: Record<string, string> = {
@@ -392,8 +403,113 @@ function KpiCard({
         <div>
           <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
           <p className="text-xl font-semibold text-foreground">{value}</p>
+          {detail ? <p className="text-xs text-muted-foreground">{detail}</p> : null}
         </div>
       </div>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Taux avec intervalle de confiance et classement par fertilité réelle.
+// ---------------------------------------------------------------------------
+
+function formatRate(rate: RateWithCI): string {
+  return rate.rate == null ? "—" : `${rate.rate} %`
+}
+
+function rateDetail(rate: RateWithCI, unit: string): string {
+  if (rate.total === 0) return `Aucun(e) ${unit} enregistré(e)`
+  if (rate.reliability === "insuffisant") return `${rate.successes}/${rate.total} ${unit} : trop peu pour conclure`
+  return `${rate.successes}/${rate.total} ${unit} · entre ${rate.low} et ${rate.high} %`
+}
+
+const VERDICT_LABEL: Record<Verdict, { label: string; tone: "success" | "warning" | "danger" | "neutral" }> = {
+  superieur: { label: "Au-dessus de la référence", tone: "success" },
+  comparable: { label: "Comparable à la référence", tone: "neutral" },
+  inferieur: { label: "En dessous de la référence", tone: "warning" },
+  sans_reference: { label: "Pas de référence", tone: "neutral" },
+  insuffisant: { label: "Trop peu de données", tone: "neutral" },
+}
+
+function peerLine(peer: PeerReference): string | null {
+  if (peer.couples === 0) return null
+  if (peer.fertile.reliability === "insuffisant") return `${peer.label} : ${peer.flowers} fleurs, trop peu`
+  return `${peer.label} : ${formatRate(peer.fertile)} sur ${peer.flowers} fleurs`
+}
+
+function CoupleRanking({ couples }: { couples: CoupleFertility[] }) {
+  return (
+    <Card className="flex flex-col gap-4 p-5">
+      <SectionHeading
+        title="Fertilité réelle des croisements"
+        description="Part des fleurs pollinisées ayant donné un fruit contenant des graines, comparée aux autres croisements des mêmes parents. Un écart n'est signalé que lorsque les intervalles de confiance ne se chevauchent pas."
+      />
+      {couples.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Aucun croisement avec une mère et un père renseignés : la comparaison n'est pas possible.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                <th className="py-2 pr-4">Croisement</th>
+                <th className="py-2 pr-4">Fertilité réelle</th>
+                <th className="py-2 pr-4">Nouaison</th>
+                <th className="py-2 pr-4">Graines/fruit</th>
+                <th className="py-2 pr-4">Comparaison</th>
+              </tr>
+            </thead>
+            <tbody>
+              {couples.map((couple) => {
+                const verdict = VERDICT_LABEL[couple.verdict]
+                const lines = [peerLine(couple.motherPeers), peerLine(couple.fatherPeers)].filter(Boolean) as string[]
+                if (couple.reference === "global") {
+                  const global = peerLine(couple.globalPeers)
+                  if (global) lines.push(global)
+                }
+                return (
+                  <tr key={couple.key} className="border-b border-border/50 align-top last:border-0">
+                    <td className="py-2.5 pr-4 font-medium text-foreground">
+                      {couple.seedParent} <span className="text-muted-foreground">×</span> {couple.pollenParent}
+                      <span className="block text-xs font-normal text-muted-foreground">
+                        {couple.lots} lot(s) · {couple.flowers} fleurs
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-4">
+                      <span className="font-medium text-foreground">{formatRate(couple.fertile)}</span>
+                      <span className="block text-xs text-muted-foreground">{rateDetail(couple.fertile, "fleurs")}</span>
+                    </td>
+                    <td className="py-2.5 pr-4">
+                      <span className="text-foreground">{formatRate(couple.nouaison)}</span>
+                    </td>
+                    <td className="py-2.5 pr-4 text-foreground">{couple.seedsPerFruit ?? "—"}</td>
+                    <td className="py-2.5 pr-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge tone={verdict.tone}>{verdict.label}</Badge>
+                        {couple.deltaPoints != null ? (
+                          <span className="text-xs text-muted-foreground">
+                            {couple.deltaPoints > 0 ? "+" : ""}
+                            {couple.deltaPoints} points
+                          </span>
+                        ) : null}
+                      </div>
+                      {lines.length > 0 ? (
+                        <ul className="mt-1 flex flex-col gap-0.5 text-xs text-muted-foreground">
+                          {lines.map((line) => (
+                            <li key={line}>{line}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Card>
   )
 }

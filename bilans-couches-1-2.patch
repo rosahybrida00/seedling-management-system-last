@@ -1,0 +1,685 @@
+--- a/lib/services/statsService.ts
++++ b/lib/services/statsService.ts
+@@ -13,6 +13,12 @@
+ // ---------------------------------------------------------------------------
+ 
+ import { supabase } from "@/lib/supabase-client"
++import {
++  buildCoupleFertility,
++  wilsonRate,
++  type CoupleFertility,
++  type RateWithCI,
++} from "@/lib/services/fertilityService"
+ 
+ export interface MonthlyReport {
+   month: string
+@@ -34,6 +40,8 @@
+   fruitsHarvested: number
+   emptyFruits: number
+   nouaisonRate: number
++  /** Nouaison avec effectif et intervalle de confiance à 95 %. */
++  nouaison: RateWithCI
+   vacuiteRate: number
+   avgSeedCount: number
+   totalSeedlings: number
+@@ -45,12 +53,18 @@
+ export interface SeasonBilan {
+   monthlyReports: MonthlyReport[]
+   parentPerformances: ParentPerformance[]
++  /** Fertilité réelle par couple (mère × père), comparée aux croisements des mêmes parents. */
++  couples: CoupleFertility[]
+   overall: {
+     totalCrosses: number
+     totalPollinatedFlowers: number
+     totalHarvestedFruits: number
+     overallNouaisonRate: number
+     overallVacuiteRate: number
++    /** Mêmes taux avec effectif et intervalle de confiance à 95 %. */
++    nouaison: RateWithCI
++    vacuite: RateWithCI
++    fertile: RateWithCI
+     totalSeeds: number
+     totalSeedlings: number
+     selectedSeedlings: number
+@@ -89,7 +103,9 @@
+ 
+ interface SeedlingRow {
+   id: string
+-  batch_id: string
++  batch_id: string | null
++  /** Fruit d'origine (cross_fruits.id) : seul lien fiable semis → fruit en production. */
++  fruit_id: string | null
+   code: string
+   status: string
+   phenotype_vigueur: string | null
+@@ -112,6 +128,16 @@
+   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+ }
+ 
++// Statuts réels de seedlings.status en base (contrainte seedlings_status_check) :
++// Semé, Stratifié, Germé, Repiqué, En croissance, Floraison, Retenu, Écarté, Mort.
++function isSelectedSeedling(status: string): boolean {
++  return status === "Retenu"
++}
++
++function isDiscardedSeedling(status: string): boolean {
++  return status === "Écarté" || status === "Mort"
++}
++
+ function isEmptyFruit(h: HarvestRow): boolean {
+   return h.seed_extraction === "totalement_vide" || (h.seed_count === 0 && h.seed_extraction !== "plein")
+ }
+@@ -181,9 +207,12 @@
+     }
+   }
+ 
++  const harvestById = new Map(harvests.map((h) => [h.id, h]))
++  const crossById = new Map(crosses.map((c) => [c.id, c]))
++
+   for (const s of seedlings) {
+-    const batch = harvests.find((h) => h.id === s.batch_id)
+-    const cross = batch ? crosses.find((c) => c.id === batch.cross_id) : null
++    const fruit = s.fruit_id ? harvestById.get(s.fruit_id) : null
++    const cross = fruit ? crossById.get(fruit.cross_id) : null
+     if (!cross) continue
+     const mk = monthKey(cross.pollination_date)
+     const entry = months.get(mk)
+@@ -224,6 +253,14 @@
+     harvestByCross.set(h.cross_id, arr)
+   }
+ 
++  const seedlingsByFruit = new Map<string, SeedlingRow[]>()
++  for (const s of seedlings) {
++    if (!s.fruit_id) continue
++    const arr = seedlingsByFruit.get(s.fruit_id) ?? []
++    arr.push(s)
++    seedlingsByFruit.set(s.fruit_id, arr)
++  }
++
+   type ParentAccum = {
+     parentName: string
+     role: "mere" | "pere"
+@@ -266,12 +303,10 @@
+       if (isEmptyFruit(h)) acc.emptyFruits += 1
+     }
+     for (const h of cHarvests) {
+-      for (const s of seedlings) {
+-        if (s.batch_id === h.id) {
+-          acc.totalSeedlings += 1
+-          if (s.status === "selected") acc.selectedSeedlings += 1
+-          if (s.status === "discarded") acc.discardedSeedlings += 1
+-        }
++      for (const s of seedlingsByFruit.get(h.id) ?? []) {
++        acc.totalSeedlings += 1
++        if (isSelectedSeedling(s.status)) acc.selectedSeedlings += 1
++        if (isDiscardedSeedling(s.status)) acc.discardedSeedlings += 1
+       }
+     }
+   }
+@@ -296,6 +331,7 @@
+         fruitsHarvested: acc.fruitsHarvested,
+         emptyFruits: acc.emptyFruits,
+         nouaisonRate,
++        nouaison: wilsonRate(acc.fruitsHarvested, acc.pollinatedFlowers),
+         vacuiteRate,
+         avgSeedCount,
+         totalSeedlings: acc.totalSeedlings,
+@@ -319,6 +355,16 @@
+   const totalEmpty = raw.harvests.filter(isEmptyFruit).length
+   const totalSeeds = raw.harvests.reduce((sum, h) => sum + h.seed_count, 0)
+ 
++  const couples = buildCoupleFertility(
++    raw.crosses.map((c) => ({
++      id: c.id,
++      seedParent: c.seed_parent,
++      pollenParent: c.pollen_parent,
++      flowerCount: c.flower_count,
++    })),
++    raw.harvests.map((h) => ({ crossId: h.cross_id, isEmpty: isEmptyFruit(h), seedCount: h.seed_count })),
++  )
++
+   const diseaseDistribution: Record<string, number> = {}
+   const treatmentDistribution: Record<string, number> = {}
+   let selectedSeedlings = 0
+@@ -326,9 +372,9 @@
+   let observingSeedlings = 0
+ 
+   for (const s of raw.seedlings) {
+-    if (s.status === "selected") selectedSeedlings += 1
+-    if (s.status === "discarded") discardedSeedlings += 1
+-    if (s.status === "observing") observingSeedlings += 1
++    if (isSelectedSeedling(s.status)) selectedSeedlings += 1
++    else if (isDiscardedSeedling(s.status)) discardedSeedlings += 1
++    else observingSeedlings += 1
+     if (s.pression_sanitaire) {
+       diseaseDistribution[s.pression_sanitaire] = (diseaseDistribution[s.pression_sanitaire] ?? 0) + 1
+     }
+@@ -340,12 +386,16 @@
+   return {
+     monthlyReports,
+     parentPerformances,
++    couples,
+     overall: {
+       totalCrosses,
+       totalPollinatedFlowers,
+       totalHarvestedFruits,
+       overallNouaisonRate: computeNouaisonRate(totalPollinatedFlowers, totalHarvestedFruits),
+       overallVacuiteRate: computeVacuiteRate(totalHarvestedFruits, totalEmpty),
++      nouaison: wilsonRate(totalHarvestedFruits, totalPollinatedFlowers),
++      vacuite: wilsonRate(totalEmpty, totalHarvestedFruits),
++      fertile: wilsonRate(totalHarvestedFruits - totalEmpty, totalPollinatedFlowers),
+       totalSeeds,
+       totalSeedlings: raw.seedlings.length,
+       selectedSeedlings,
+@@ -358,11 +408,17 @@
+ }
+ 
+ export async function fetchRawData(): Promise<RawData> {
++  // Les bilans ne portent que sur les données de l'utilisateur connecté, même si
++  // une policy RLS trop large laissait voir celles des autres.
++  const { data: authData } = await supabase.auth.getUser()
++  const userId = authData.user?.id
++  if (!userId) return { crosses: [], harvests: [], seedlings: [], pollenLots: [] }
++
+   const [{ data: cData }, { data: hData }, { data: sData }, { data: pData }] = await Promise.all([
+-    supabase.from("crosses").select("id, code, seed_parent, pollen_parent, pollination_date, flower_count").order("created_at", { ascending: false }),
+-    supabase.from("cross_fruits").select("id, cross_id, fruit_name, harvest_date, seed_count, seed_extraction, fruit_calibre, status").order("created_at", { ascending: false }),
+-    supabase.from("seedlings").select("id, batch_id, code, status, phenotype_vigueur, pression_sanitaire, traitement").order("created_at", { ascending: false }),
+-    supabase.from("pollen_lots").select("id, lot_number, rose_name, anther_quality, dehiscence").order("created_at", { ascending: false }),
++    supabase.from("crosses").select("id, code, seed_parent, pollen_parent, pollination_date, flower_count").eq("user_id", userId).order("created_at", { ascending: false }),
++    supabase.from("cross_fruits").select("id, cross_id, fruit_name, harvest_date, seed_count, seed_extraction, fruit_calibre, status").eq("user_id", userId).order("created_at", { ascending: false }),
++    supabase.from("seedlings").select("id, batch_id, fruit_id, code, status, phenotype_vigueur, pression_sanitaire, traitement").eq("user_id", userId).order("created_at", { ascending: false }),
++    supabase.from("pollen_lots").select("id, lot_number, rose_name, anther_quality, dehiscence").eq("user_id", userId).order("created_at", { ascending: false }),
+   ])
+ 
+   return {
+--- a/app/bilans/page.tsx
++++ b/app/bilans/page.tsx
+@@ -8,6 +8,7 @@
+ import { supabase } from "@/lib/supabase-client"
+ import { fetchSeasonBilan, type SeasonBilan, type ParentPerformance } from "@/lib/services/statsService"
+ import { fetchRuleBilan, type RuleBilan, type RuleFinding } from "@/lib/services/ruleEngine"
++import type { CoupleFertility, PeerReference, RateWithCI, Verdict } from "@/lib/services/fertilityService"
+ import { generateDhoPdf } from "@/lib/services/dhoExport"
+ import {
+   PRESSION_SANITAIRE_LABELS,
+@@ -103,10 +104,8 @@
+         }
+       />
+ 
+-      <RuleBilanPanel report={ruleBilan} />
+-
+-      {/* KPIs globaux */}
+-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
++      {/* KPIs globaux : chaque taux affiche son effectif et son intervalle de confiance */}
++      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+         <KpiCard
+           icon={<Flower2 className="size-5" />}
+           label="Croisements"
+@@ -121,15 +120,24 @@
+         />
+         <KpiCard
+           icon={<TrendingUp className="size-5" />}
+-          label="Taux de nouaison"
+-          value={`${o!.overallNouaisonRate}%`}
+-          tone={o!.overallNouaisonRate >= 50 ? "success" : "warning"}
++          label="Nouaison"
++          value={formatRate(o!.nouaison)}
++          detail={rateDetail(o!.nouaison, "fleurs")}
++          tone="primary"
+         />
+         <KpiCard
+           icon={<TrendingDown className="size-5" />}
+-          label="Taux de vacuité"
+-          value={`${o!.overallVacuiteRate}%`}
+-          tone={o!.overallVacuiteRate <= 20 ? "success" : "danger"}
++          label="Vacuité"
++          value={formatRate(o!.vacuite)}
++          detail={rateDetail(o!.vacuite, "fruits")}
++          tone="accent"
++        />
++        <KpiCard
++          icon={<Sprout className="size-5" />}
++          label="Fertilité réelle"
++          value={formatRate(o!.fertile)}
++          detail={rateDetail(o!.fertile, "fleurs")}
++          tone="primary"
+         />
+       </div>
+ 
+@@ -160,6 +168,8 @@
+         />
+       </div>
+ 
++      <CoupleRanking couples={bilan!.couples} />
++
+       {/* Bilan mensuel */}
+       <Card className="p-5">
+         <h3 className="mb-4 flex items-center gap-2 font-serif text-lg text-foreground">
+@@ -287,7 +297,6 @@
+                   <th className="py-2 pr-4">Graines/fruit</th>
+                   <th className="py-2 pr-4">Semis</th>
+                   <th className="py-2 pr-4">Sélect.</th>
+-                  <th className="py-2 pr-4">Index fert.</th>
+                 </tr>
+               </thead>
+               <tbody>
+@@ -299,6 +308,8 @@
+           </div>
+         )}
+       </Card>
++
++      <RuleBilanPanel report={ruleBilan} />
+     </div>
+   )
+ }
+@@ -306,7 +317,7 @@
+ function RuleBilanPanel({ report }: { report: RuleBilan | null }) {
+   return (
+     <Card className="flex flex-col gap-4 p-5">
+-      <SectionHeading title="Moteur expert déterministe" description="Règles fixes, seuils affichés et preuves issues des seules données structurées." />
++      <SectionHeading title="Alertes à vérifier (règles provisoires)" description="Règles à seuils fixes, en cours de remplacement par des comparaisons calculées sur vos propres données." />
+       {!report ? <p className="text-sm text-muted-foreground">Chargement des faits structurés…</p> : null}
+       {report?.warning ? <p role="alert" className="text-sm text-destructive">{report.warning}</p> : null}
+       {report && !report.warning ? (
+@@ -350,7 +361,8 @@
+       <td className="py-2.5 pr-4 text-foreground">{perf.crossesCount}</td>
+       <td className="py-2.5 pr-4 text-foreground">{perf.fruitsHarvested}</td>
+       <td className="py-2.5 pr-4">
+-        <Badge tone={perf.nouaisonRate >= 50 ? "success" : "warning"}>{perf.nouaisonRate}%</Badge>
++        <span className="font-medium text-foreground">{formatRate(perf.nouaison)}</span>
++        <span className="block text-xs text-muted-foreground">{rateDetail(perf.nouaison, "fleurs")}</span>
+       </td>
+       <td className="py-2.5 pr-4">
+         <Badge tone={perf.vacuiteRate <= 20 ? "success" : "danger"}>{perf.vacuiteRate}%</Badge>
+@@ -358,9 +370,6 @@
+       <td className="py-2.5 pr-4 text-foreground">{perf.avgSeedCount}</td>
+       <td className="py-2.5 pr-4 text-foreground">{perf.totalSeedlings}</td>
+       <td className="py-2.5 pr-4 text-foreground">{perf.selectedSeedlings}</td>
+-      <td className="py-2.5 pr-4">
+-        <span className="font-medium text-primary">{perf.fertilityIndex}/100</span>
+-      </td>
+     </tr>
+   )
+ }
+@@ -369,11 +378,13 @@
+   icon,
+   label,
+   value,
++  detail,
+   tone,
+ }: {
+   icon: React.ReactNode
+   label: string
+   value: string | number
++  detail?: string
+   tone: "primary" | "accent" | "success" | "warning" | "danger"
+ }) {
+   const toneClasses: Record<string, string> = {
+@@ -392,8 +403,113 @@
+         <div>
+           <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
+           <p className="text-xl font-semibold text-foreground">{value}</p>
++          {detail ? <p className="text-xs text-muted-foreground">{detail}</p> : null}
+         </div>
+       </div>
+     </Card>
+   )
+ }
++
++// ---------------------------------------------------------------------------
++// Taux avec intervalle de confiance et classement par fertilité réelle.
++// ---------------------------------------------------------------------------
++
++function formatRate(rate: RateWithCI): string {
++  return rate.rate == null ? "—" : `${rate.rate} %`
++}
++
++function rateDetail(rate: RateWithCI, unit: string): string {
++  if (rate.total === 0) return `Aucun(e) ${unit} enregistré(e)`
++  if (rate.reliability === "insuffisant") return `${rate.successes}/${rate.total} ${unit} : trop peu pour conclure`
++  return `${rate.successes}/${rate.total} ${unit} · entre ${rate.low} et ${rate.high} %`
++}
++
++const VERDICT_LABEL: Record<Verdict, { label: string; tone: "success" | "warning" | "danger" | "neutral" }> = {
++  superieur: { label: "Au-dessus de la référence", tone: "success" },
++  comparable: { label: "Comparable à la référence", tone: "neutral" },
++  inferieur: { label: "En dessous de la référence", tone: "warning" },
++  sans_reference: { label: "Pas de référence", tone: "neutral" },
++  insuffisant: { label: "Trop peu de données", tone: "neutral" },
++}
++
++function peerLine(peer: PeerReference): string | null {
++  if (peer.couples === 0) return null
++  if (peer.fertile.reliability === "insuffisant") return `${peer.label} : ${peer.flowers} fleurs, trop peu`
++  return `${peer.label} : ${formatRate(peer.fertile)} sur ${peer.flowers} fleurs`
++}
++
++function CoupleRanking({ couples }: { couples: CoupleFertility[] }) {
++  return (
++    <Card className="flex flex-col gap-4 p-5">
++      <SectionHeading
++        title="Fertilité réelle des croisements"
++        description="Part des fleurs pollinisées ayant donné un fruit contenant des graines, comparée aux autres croisements des mêmes parents. Un écart n'est signalé que lorsque les intervalles de confiance ne se chevauchent pas."
++      />
++      {couples.length === 0 ? (
++        <p className="text-sm text-muted-foreground">
++          Aucun croisement avec une mère et un père renseignés : la comparaison n'est pas possible.
++        </p>
++      ) : (
++        <div className="overflow-x-auto">
++          <table className="w-full text-sm">
++            <thead>
++              <tr className="border-b border-border text-left text-xs text-muted-foreground">
++                <th className="py-2 pr-4">Croisement</th>
++                <th className="py-2 pr-4">Fertilité réelle</th>
++                <th className="py-2 pr-4">Nouaison</th>
++                <th className="py-2 pr-4">Graines/fruit</th>
++                <th className="py-2 pr-4">Comparaison</th>
++              </tr>
++            </thead>
++            <tbody>
++              {couples.map((couple) => {
++                const verdict = VERDICT_LABEL[couple.verdict]
++                const lines = [peerLine(couple.motherPeers), peerLine(couple.fatherPeers)].filter(Boolean) as string[]
++                if (couple.reference === "global") {
++                  const global = peerLine(couple.globalPeers)
++                  if (global) lines.push(global)
++                }
++                return (
++                  <tr key={couple.key} className="border-b border-border/50 align-top last:border-0">
++                    <td className="py-2.5 pr-4 font-medium text-foreground">
++                      {couple.seedParent} <span className="text-muted-foreground">×</span> {couple.pollenParent}
++                      <span className="block text-xs font-normal text-muted-foreground">
++                        {couple.lots} lot(s) · {couple.flowers} fleurs
++                      </span>
++                    </td>
++                    <td className="py-2.5 pr-4">
++                      <span className="font-medium text-foreground">{formatRate(couple.fertile)}</span>
++                      <span className="block text-xs text-muted-foreground">{rateDetail(couple.fertile, "fleurs")}</span>
++                    </td>
++                    <td className="py-2.5 pr-4">
++                      <span className="text-foreground">{formatRate(couple.nouaison)}</span>
++                    </td>
++                    <td className="py-2.5 pr-4 text-foreground">{couple.seedsPerFruit ?? "—"}</td>
++                    <td className="py-2.5 pr-4">
++                      <div className="flex flex-wrap items-center gap-2">
++                        <Badge tone={verdict.tone}>{verdict.label}</Badge>
++                        {couple.deltaPoints != null ? (
++                          <span className="text-xs text-muted-foreground">
++                            {couple.deltaPoints > 0 ? "+" : ""}
++                            {couple.deltaPoints} points
++                          </span>
++                        ) : null}
++                      </div>
++                      {lines.length > 0 ? (
++                        <ul className="mt-1 flex flex-col gap-0.5 text-xs text-muted-foreground">
++                          {lines.map((line) => (
++                            <li key={line}>{line}</li>
++                          ))}
++                        </ul>
++                      ) : null}
++                    </td>
++                  </tr>
++                )
++              })}
++            </tbody>
++          </table>
++        </div>
++      )}
++    </Card>
++  )
++}
+--- /dev/null
++++ b/lib/services/fertilityService.ts
+@@ -0,0 +1,250 @@
++// ---------------------------------------------------------------------------
++// fertilityService — couches 1 et 2 de la page Bilans.
++//
++// Couche 1 : chaque taux est accompagné de son effectif et d'un intervalle de
++//            confiance (Wilson, 95 %), pour ne jamais afficher un pourcentage
++//            sans dire sur combien de cas il repose.
++// Couche 2 : « fertilité réelle » d'un couple de parents (mère × père),
++//            comparée aux autres croisements des mêmes parents, sans seuil
++//            arbitraire ni note pondérée.
++//
++// Toutes les fonctions sont pures (aucun accès Supabase) : elles reçoivent des
++// lignes déjà chargées et sont testables isolément.
++// ---------------------------------------------------------------------------
++
++export type Reliability = "insuffisant" | "faible" | "correct"
++
++export interface RateWithCI {
++  successes: number
++  total: number
++  /** Pourcentage 0-100 arrondi à 0,1, ou null si total = 0. */
++  rate: number | null
++  low: number | null
++  high: number | null
++  reliability: Reliability
++}
++
++/** En dessous de MIN_TOTAL, aucune conclusion n'est affichée. */
++export const MIN_TOTAL = 5
++/** En dessous de GOOD_TOTAL, l'intervalle est très large : fiabilité « faible ». */
++export const GOOD_TOTAL = 20
++
++const Z_95 = 1.96
++
++function round1(value: number): number {
++  return Math.round(value * 10) / 10
++}
++
++export function reliabilityFor(total: number): Reliability {
++  if (total < MIN_TOTAL) return "insuffisant"
++  if (total < GOOD_TOTAL) return "faible"
++  return "correct"
++}
++
++/**
++ * Taux avec intervalle de Wilson à 95 %. `successes` est borné à [0, total] :
++ * une donnée incohérente (plus de fruits que de fleurs saisies) ne produit
++ * jamais un taux supérieur à 100 %.
++ */
++export function wilsonRate(successes: number, total: number): RateWithCI {
++  const n = Math.max(0, Math.floor(total))
++  const s = Math.min(Math.max(0, Math.floor(successes)), n)
++  if (n === 0) {
++    return { successes: 0, total: 0, rate: null, low: null, high: null, reliability: "insuffisant" }
++  }
++  const p = s / n
++  const z2 = Z_95 * Z_95
++  const denom = 1 + z2 / n
++  const centre = (p + z2 / (2 * n)) / denom
++  const half = (Z_95 * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom
++  return {
++    successes: s,
++    total: n,
++    rate: round1(p * 100),
++    low: round1(Math.max(0, centre - half) * 100),
++    high: round1(Math.min(1, centre + half) * 100),
++    reliability: reliabilityFor(n),
++  }
++}
++
++// ----------------------------- Couche 2 -------------------------------------
++
++export interface LotInput {
++  id: string
++  seedParent: string | null
++  pollenParent: string | null
++  flowerCount: number | null
++}
++
++export interface FruitInput {
++  crossId: string
++  /** Fruit mené à la récolte (récolté ou vide) ; les fruits avortés ne sont pas fournis. */
++  isEmpty: boolean
++  seedCount: number
++}
++
++export type Verdict = "superieur" | "comparable" | "inferieur" | "sans_reference" | "insuffisant"
++export type ReferenceKind = "parents" | "global" | "aucune"
++
++export interface PeerReference {
++  label: string
++  couples: number
++  flowers: number
++  fertile: RateWithCI
++}
++
++export interface CoupleFertility {
++  key: string
++  seedParent: string
++  pollenParent: string
++  lots: number
++  flowers: number
++  /** Fruits noués (récoltés, vides compris) / fleurs pollinisées. */
++  nouaison: RateWithCI
++  /** Fruits contenant au moins une graine / fleurs pollinisées : la fertilité réelle. */
++  fertile: RateWithCI
++  seedsPerFruit: number | null
++  motherPeers: PeerReference
++  fatherPeers: PeerReference
++  globalPeers: PeerReference
++  reference: ReferenceKind
++  /** Écart en points de pourcentage par rapport à la référence retenue. */
++  deltaPoints: number | null
++  verdict: Verdict
++}
++
++interface CoupleAccum {
++  key: string
++  seedParent: string
++  pollenParent: string
++  lots: number
++  flowers: number
++  fruitsSet: number
++  fertileFruits: number
++  seeds: number
++}
++
++function coupleKey(seedParent: string, pollenParent: string): string {
++  return `${seedParent.trim().toLowerCase()}×${pollenParent.trim().toLowerCase()}`
++}
++
++function pool(label: string, couples: CoupleAccum[]): PeerReference {
++  const flowers = couples.reduce((sum, c) => sum + c.flowers, 0)
++  const fertile = couples.reduce((sum, c) => sum + c.fertileFruits, 0)
++  return { label, couples: couples.length, flowers, fertile: wilsonRate(fertile, flowers) }
++}
++
++/**
++ * Verdict prudent : « supérieur » ou « inférieur » uniquement si les deux
++ * intervalles de confiance ne se chevauchent pas. Sinon l'écart est
++ * considéré comme non significatif (« comparable »).
++ */
++export function compareRates(own: RateWithCI, ref: RateWithCI): Verdict {
++  if (own.reliability === "insuffisant") return "insuffisant"
++  if (ref.reliability === "insuffisant" || own.low == null || own.high == null || ref.low == null || ref.high == null) {
++    return "sans_reference"
++  }
++  if (own.low > ref.high) return "superieur"
++  if (own.high < ref.low) return "inferieur"
++  return "comparable"
++}
++
++export function buildCoupleFertility(lots: LotInput[], fruits: FruitInput[]): CoupleFertility[] {
++  const fruitsByLot = new Map<string, FruitInput[]>()
++  for (const fruit of fruits) {
++    const list = fruitsByLot.get(fruit.crossId) ?? []
++    list.push(fruit)
++    fruitsByLot.set(fruit.crossId, list)
++  }
++
++  const couples = new Map<string, CoupleAccum>()
++  for (const lot of lots) {
++    // Un croisement sans les deux parents ne peut pas être comparé à ses pairs.
++    if (!lot.seedParent?.trim() || !lot.pollenParent?.trim()) continue
++    const key = coupleKey(lot.seedParent, lot.pollenParent)
++    let acc = couples.get(key)
++    if (!acc) {
++      acc = {
++        key,
++        seedParent: lot.seedParent.trim(),
++        pollenParent: lot.pollenParent.trim(),
++        lots: 0,
++        flowers: 0,
++        fruitsSet: 0,
++        fertileFruits: 0,
++        seeds: 0,
++      }
++      couples.set(key, acc)
++    }
++    acc.lots += 1
++    acc.flowers += lot.flowerCount ?? 0
++    for (const fruit of fruitsByLot.get(lot.id) ?? []) {
++      acc.fruitsSet += 1
++      acc.seeds += fruit.seedCount
++      if (!fruit.isEmpty) acc.fertileFruits += 1
++    }
++  }
++
++  const all = Array.from(couples.values())
++
++  return all
++    .map((couple): CoupleFertility => {
++      const others = all.filter((c) => c.key !== couple.key)
++      const sameMother = others.filter((c) => c.seedParent.toLowerCase() === couple.seedParent.toLowerCase())
++      const sameFather = others.filter((c) => c.pollenParent.toLowerCase() === couple.pollenParent.toLowerCase())
++      // Une mère qui sert aussi de père (ou inversement) reste un parent identique.
++      const sameMotherAsFather = others.filter((c) => c.pollenParent.toLowerCase() === couple.seedParent.toLowerCase())
++      const sameFatherAsMother = others.filter((c) => c.seedParent.toLowerCase() === couple.pollenParent.toLowerCase())
++
++      const motherPeers = pool(`${couple.seedParent} avec d'autres pères`, sameMother)
++      const fatherPeers = pool(`${couple.pollenParent} avec d'autres mères`, sameFather)
++      const globalPeers = pool("Tous les autres croisements", others)
++
++      const parentGroup = new Map<string, CoupleAccum>()
++      for (const c of [...sameMother, ...sameFather, ...sameMotherAsFather, ...sameFatherAsMother]) parentGroup.set(c.key, c)
++      const parentsPeers = pool("Autres croisements des mêmes parents", Array.from(parentGroup.values()))
++
++      const nouaison = wilsonRate(couple.fruitsSet, couple.flowers)
++      const fertile = wilsonRate(couple.fertileFruits, couple.flowers)
++
++      let reference: ReferenceKind = "aucune"
++      let chosen: PeerReference | null = null
++      if (parentsPeers.fertile.reliability !== "insuffisant") {
++        reference = "parents"
++        chosen = parentsPeers
++      } else if (globalPeers.fertile.reliability !== "insuffisant") {
++        reference = "global"
++        chosen = globalPeers
++      }
++
++      const verdict = chosen ? compareRates(fertile, chosen.fertile) : fertile.reliability === "insuffisant" ? "insuffisant" : "sans_reference"
++      const deltaPoints =
++        chosen && fertile.rate != null && chosen.fertile.rate != null && fertile.reliability !== "insuffisant"
++          ? round1(fertile.rate - chosen.fertile.rate)
++          : null
++
++      return {
++        key: couple.key,
++        seedParent: couple.seedParent,
++        pollenParent: couple.pollenParent,
++        lots: couple.lots,
++        flowers: couple.flowers,
++        nouaison,
++        fertile,
++        seedsPerFruit: couple.fruitsSet > 0 ? round1(couple.seeds / couple.fruitsSet) : null,
++        motherPeers,
++        fatherPeers,
++        globalPeers,
++        reference,
++        deltaPoints,
++        verdict,
++      }
++    })
++    .sort((a, b) => {
++      // Les couples exploitables d'abord, puis par taux de fertilité décroissant.
++      const aReady = a.fertile.reliability === "insuffisant" ? 1 : 0
++      const bReady = b.fertile.reliability === "insuffisant" ? 1 : 0
++      if (aReady !== bReady) return aReady - bReady
++      return (b.fertile.rate ?? -1) - (a.fertile.rate ?? -1)
++    })
++}
