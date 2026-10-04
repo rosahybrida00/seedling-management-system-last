@@ -1,0 +1,421 @@
+-- =====================================================================
+-- 034 — Lien croisement ↔ variété et cohérence chronologique.
+--
+-- Problèmes corrigés :
+--  1. Un croisement ne mémorisait que le NOM texte de ses parents ; l'id choisi
+--     dans le formulaire était perdu (crosses.seed_parent_id pointe vers
+--     l'ancienne table rose_varieties, jamais utilisée). L'historique d'une
+--     variété cherchait donc par nom exact et ne trouvait rien dès que le nom
+--     différait, et jamais pour un plant issu d'un semis.
+--  2. Les dates étaient libres : on pouvait stratifier avant la pollinisation.
+--
+-- Contenu :
+--  * crosses : 4 colonnes de lien (variété du catalogue OU semis, pour la mère
+--    et pour le père), remplies automatiquement par le nom quand il n'y a
+--    qu'une seule correspondance, y compris pour les anciens croisements ;
+--  * vues field_planting_crossings (historique de croisement d'un plant) et
+--    crossing_parents_unplaced (parents jamais placés en serre ou parcelle) ;
+--  * contrôle de la chaîne : pollinisation <= récolte <= stratification / semis
+--    <= levée <= mise en place, et aucun soin ni observation avant la mise en
+--    place d'un plant ;
+--  * vue date_chain_violations : liste des lignes existantes à corriger.
+-- Les vues sont filtrées sur l'utilisateur connecté (auth.uid()) en plus de la
+-- RLS, car certaines tables sources ont encore des policies ouvertes.
+-- Les contrôles ne s'appliquent qu'aux lignes créées ou dont une date change :
+-- une ancienne ligne incohérente n'empêche aucune autre modification.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 1. Normalisation des noms (sans dépendre d'une extension)
+-- ---------------------------------------------------------------------
+create or replace function public.field_norm_name(p_name text)
+returns text
+language sql immutable
+as $$
+  select nullif(
+    btrim(regexp_replace(
+      translate(lower(coalesce(p_name, '')), 'àâäáãåéèêëíìîïóòôöõúùûüýÿçñ', 'aaaaaaeeeeiiiiooooouuuuyycn'),
+      '[^a-z0-9]+', ' ', 'g')),
+    '');
+$$;
+
+-- ---------------------------------------------------------------------
+-- 2. Colonnes de lien sur les croisements
+-- ---------------------------------------------------------------------
+alter table public.crosses
+  add column if not exists seed_parent_variety_id uuid references public.varieties(id) on delete set null,
+  add column if not exists pollen_parent_variety_id uuid references public.varieties(id) on delete set null,
+  add column if not exists seed_parent_seedling_id uuid references public.seedlings(id) on delete set null,
+  add column if not exists pollen_parent_seedling_id uuid references public.seedlings(id) on delete set null;
+
+alter table public.crosses drop constraint if exists crosses_seed_parent_one_link;
+alter table public.crosses add constraint crosses_seed_parent_one_link
+  check (seed_parent_variety_id is null or seed_parent_seedling_id is null);
+alter table public.crosses drop constraint if exists crosses_pollen_parent_one_link;
+alter table public.crosses add constraint crosses_pollen_parent_one_link
+  check (pollen_parent_variety_id is null or pollen_parent_seedling_id is null);
+
+create index if not exists idx_crosses_seed_variety on public.crosses (seed_parent_variety_id) where seed_parent_variety_id is not null;
+create index if not exists idx_crosses_pollen_variety on public.crosses (pollen_parent_variety_id) where pollen_parent_variety_id is not null;
+create index if not exists idx_crosses_seed_seedling on public.crosses (seed_parent_seedling_id) where seed_parent_seedling_id is not null;
+create index if not exists idx_crosses_pollen_seedling on public.crosses (pollen_parent_seedling_id) where pollen_parent_seedling_id is not null;
+
+-- Variété du catalogue correspondant à un nom, seulement si elle est unique.
+create or replace function public.field_resolve_variety(p_name text)
+returns uuid
+language sql stable
+as $$
+  with n as (select public.field_norm_name(p_name) as norm),
+  hits as (
+    select v.id
+    from public.varieties v, n
+    where n.norm is not null
+      and n.norm in (
+        coalesce(public.field_norm_name(v.name), ''),
+        coalesce(public.field_norm_name(v.commercial_name), ''),
+        coalesce(public.field_norm_name(v.registration_name), '')
+      )
+  )
+  select case when (select count(*) from hits) = 1 then (select id from hits) end;
+$$;
+
+-- Semis de l'utilisateur correspondant à un code, seulement s'il est unique.
+create or replace function public.field_resolve_seedling(p_user_id uuid, p_name text)
+returns uuid
+language sql stable
+as $$
+  with n as (select public.field_norm_name(p_name) as norm),
+  hits as (
+    select s.id
+    from public.seedlings s, n
+    where s.user_id = p_user_id
+      and n.norm is not null
+      and public.field_norm_name(s.code) = n.norm
+  )
+  select case when (select count(*) from hits) = 1 then (select id from hits) end;
+$$;
+
+-- Remplit les liens à l'enregistrement : l'application peut les fournir, sinon
+-- le nom du parent suffit. Un lien déjà posé n'est jamais écrasé ; si le nom du
+-- parent change, l'ancien lien est recalculé.
+create or replace function public.field_link_cross_parents()
+returns trigger
+language plpgsql
+as $$
+begin
+  if tg_op = 'UPDATE' and new.seed_parent is distinct from old.seed_parent
+     and new.seed_parent_variety_id is not distinct from old.seed_parent_variety_id
+     and new.seed_parent_seedling_id is not distinct from old.seed_parent_seedling_id then
+    new.seed_parent_variety_id := null;
+    new.seed_parent_seedling_id := null;
+  end if;
+  if tg_op = 'UPDATE' and new.pollen_parent is distinct from old.pollen_parent
+     and new.pollen_parent_variety_id is not distinct from old.pollen_parent_variety_id
+     and new.pollen_parent_seedling_id is not distinct from old.pollen_parent_seedling_id then
+    new.pollen_parent_variety_id := null;
+    new.pollen_parent_seedling_id := null;
+  end if;
+
+  if new.seed_parent_variety_id is null and new.seed_parent_seedling_id is null and new.seed_parent is not null then
+    new.seed_parent_variety_id := public.field_resolve_variety(new.seed_parent);
+    if new.seed_parent_variety_id is null then
+      new.seed_parent_seedling_id := public.field_resolve_seedling(new.user_id, new.seed_parent);
+    end if;
+  end if;
+  if new.pollen_parent_variety_id is null and new.pollen_parent_seedling_id is null and new.pollen_parent is not null then
+    new.pollen_parent_variety_id := public.field_resolve_variety(new.pollen_parent);
+    if new.pollen_parent_variety_id is null then
+      new.pollen_parent_seedling_id := public.field_resolve_seedling(new.user_id, new.pollen_parent);
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_field_link_cross_parents on public.crosses;
+create trigger trg_field_link_cross_parents
+  before insert or update of seed_parent, pollen_parent, seed_parent_variety_id, pollen_parent_variety_id,
+                             seed_parent_seedling_id, pollen_parent_seedling_id
+  on public.crosses
+  for each row execute function public.field_link_cross_parents();
+
+-- Reprise des croisements existants : un simple UPDATE de la colonne déclenche
+-- la résolution par nom.
+update public.crosses set seed_parent = seed_parent
+ where (seed_parent is not null and seed_parent_variety_id is null and seed_parent_seedling_id is null)
+    or (pollen_parent is not null and pollen_parent_variety_id is null and pollen_parent_seedling_id is null);
+
+-- ---------------------------------------------------------------------
+-- 3. Historique de croisement d'un plant, et parents non placés
+-- ---------------------------------------------------------------------
+create or replace view public.field_planting_crossings
+with (security_invoker = true) as
+select
+  pl.id as planting_id,
+  pl.user_id,
+  c.id as cross_id,
+  c.code as cross_code,
+  r.role,
+  case when r.role = 'mere' then c.pollen_parent else c.seed_parent end as partner_name,
+  c.pollination_date,
+  c.status,
+  c.flower_count,
+  f.fruit_count,
+  f.seed_count,
+  f.first_harvest_date,
+  f.last_harvest_date
+from public.field_plantings pl
+join public.crosses c on c.user_id = pl.user_id
+cross join lateral (
+  select 'mere'::text as role
+   where (pl.variety_id is not null and pl.variety_id = c.seed_parent_variety_id)
+      or (pl.seedling_id is not null and pl.seedling_id = c.seed_parent_seedling_id)
+  union all
+  select 'pere'::text
+   where (pl.variety_id is not null and pl.variety_id = c.pollen_parent_variety_id)
+      or (pl.seedling_id is not null and pl.seedling_id = c.pollen_parent_seedling_id)
+) r
+left join lateral (
+  select count(*)::int as fruit_count,
+         coalesce(sum(cf.seed_count), 0)::int as seed_count,
+         min(cf.harvest_date) as first_harvest_date,
+         max(cf.harvest_date) as last_harvest_date
+  from public.cross_fruits cf
+  where cf.cross_id = c.id
+) f on true
+where pl.user_id = auth.uid();
+
+grant select on public.field_planting_crossings to authenticated;
+
+create or replace view public.crossing_parents_unplaced
+with (security_invoker = true) as
+with parents as (
+  select c.user_id, 'mere'::text as role, c.seed_parent_variety_id as variety_id, c.seed_parent_seedling_id as seedling_id,
+         c.seed_parent as name, c.pollination_date
+    from public.crosses c
+   where c.user_id = auth.uid()
+     and (c.seed_parent_variety_id is not null or c.seed_parent_seedling_id is not null)
+  union all
+  select c.user_id, 'pere', c.pollen_parent_variety_id, c.pollen_parent_seedling_id, c.pollen_parent, c.pollination_date
+    from public.crosses c
+   where c.user_id = auth.uid()
+     and (c.pollen_parent_variety_id is not null or c.pollen_parent_seedling_id is not null)
+)
+select
+  p.user_id,
+  p.variety_id,
+  p.seedling_id,
+  (array_agg(p.name order by p.pollination_date desc nulls last))[1] as name,
+  count(*)::int as cross_count,
+  count(*) filter (where p.role = 'mere')::int as as_mother,
+  count(*) filter (where p.role = 'pere')::int as as_father,
+  max(p.pollination_date) as last_pollination_date
+from parents p
+where not exists (
+  select 1 from public.field_plantings pl
+   where pl.user_id = p.user_id
+     and pl.removed_at is null
+     and ((p.variety_id is not null and pl.variety_id = p.variety_id)
+       or (p.seedling_id is not null and pl.seedling_id = p.seedling_id))
+)
+group by p.user_id, p.variety_id, p.seedling_id;
+
+grant select on public.crossing_parents_unplaced to authenticated;
+
+-- ---------------------------------------------------------------------
+-- 4. Chaîne chronologique
+-- ---------------------------------------------------------------------
+-- pollinisation <= récolte du fruit <= stratification / semis <= levée <= mise en place
+
+-- Dates de stratification (aussi ajoutées par la migration 025, sans effet si présentes).
+alter table public.sowing_batches
+  add column if not exists stratification_start_date date,
+  add column if not exists stratification_end_date date;
+
+-- Date de départ d'un lot de graines : récolte du fruit, à défaut pollinisation.
+create or replace function public.field_fruit_origin_date(p_fruit_id uuid)
+returns date
+language sql stable
+as $$
+  select coalesce(cf.harvest_date, c.pollination_date)
+  from public.cross_fruits cf
+  join public.crosses c on c.id = cf.cross_id
+  where cf.id = p_fruit_id;
+$$;
+
+create or replace function public.field_check_fruit_dates()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_pollination date;
+begin
+  if new.harvest_date is null then return new; end if;
+  select pollination_date into v_pollination from public.crosses where id = new.cross_id;
+  if v_pollination is not null and new.harvest_date < v_pollination then
+    raise exception 'La récolte (%) ne peut pas précéder la pollinisation (%).', new.harvest_date, v_pollination
+      using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.field_check_batch_dates()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_origin date;
+begin
+  if new.fruit_id is null then return new; end if;
+  v_origin := public.field_fruit_origin_date(new.fruit_id);
+  if v_origin is null then return new; end if;
+  if new.stratification_start_date is not null and new.stratification_start_date < v_origin then
+    raise exception 'La stratification (début le %) ne peut pas précéder la récolte du fruit (%).', new.stratification_start_date, v_origin
+      using errcode = '23514';
+  end if;
+  if new.sowing_date is not null and new.sowing_date < v_origin then
+    raise exception 'Le semis (%) ne peut pas précéder la récolte du fruit (%).', new.sowing_date, v_origin
+      using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.field_check_seedling_dates()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_origin date;
+begin
+  if new.germination_date is not null and new.sowing_date is not null and new.germination_date < new.sowing_date then
+    raise exception 'La levée (%) ne peut pas précéder le semis (%).', new.germination_date, new.sowing_date
+      using errcode = '23514';
+  end if;
+  if new.planted_date is not null and coalesce(new.germination_date, new.sowing_date) is not null
+     and new.planted_date < coalesce(new.germination_date, new.sowing_date) then
+    raise exception 'La mise en place (%) ne peut pas précéder la levée (%).', new.planted_date, coalesce(new.germination_date, new.sowing_date)
+      using errcode = '23514';
+  end if;
+  if new.fruit_id is not null and new.sowing_date is not null then
+    v_origin := public.field_fruit_origin_date(new.fruit_id);
+    if v_origin is not null and new.sowing_date < v_origin then
+      raise exception 'Le semis (%) ne peut pas précéder la récolte du fruit (%).', new.sowing_date, v_origin
+        using errcode = '23514';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.field_check_task_date()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_planted date;
+begin
+  if new.done_date is null then return new; end if;
+  select planted_at into v_planted from public.field_plantings where id = new.planting_id;
+  if v_planted is not null and new.done_date < v_planted then
+    raise exception 'Un soin (%) ne peut pas précéder la mise en place du plant (%).', new.done_date, v_planted
+      using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.field_check_observation_date()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_planted date;
+begin
+  if new.planting_id is null or new.observation_date is null then return new; end if;
+  select planted_at into v_planted from public.field_plantings where id = new.planting_id;
+  if v_planted is not null and new.observation_date < v_planted then
+    raise exception 'Une observation (%) ne peut pas précéder la mise en place du plant (%).', new.observation_date, v_planted
+      using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_field_check_fruit_dates on public.cross_fruits;
+create trigger trg_field_check_fruit_dates
+  before insert or update of harvest_date, cross_id on public.cross_fruits
+  for each row execute function public.field_check_fruit_dates();
+
+drop trigger if exists trg_field_check_batch_dates on public.sowing_batches;
+create trigger trg_field_check_batch_dates
+  before insert or update of stratification_start_date, sowing_date, fruit_id on public.sowing_batches
+  for each row execute function public.field_check_batch_dates();
+
+drop trigger if exists trg_field_check_seedling_dates on public.seedlings;
+create trigger trg_field_check_seedling_dates
+  before insert or update of sowing_date, germination_date, planted_date, fruit_id on public.seedlings
+  for each row execute function public.field_check_seedling_dates();
+
+drop trigger if exists trg_field_check_task_date on public.field_intervention_tasks;
+create trigger trg_field_check_task_date
+  before insert or update of done_date, planting_id on public.field_intervention_tasks
+  for each row execute function public.field_check_task_date();
+
+drop trigger if exists trg_field_check_observation_date on public.field_observations;
+create trigger trg_field_check_observation_date
+  before insert or update of observation_date, planting_id on public.field_observations
+  for each row execute function public.field_check_observation_date();
+
+-- Un plant ne peut pas être retiré avant d'avoir été mis en place (lignes
+-- existantes non vérifiées : seules les nouvelles écritures sont contrôlées).
+alter table public.field_plantings drop constraint if exists field_plantings_removed_after_planted;
+alter table public.field_plantings add constraint field_plantings_removed_after_planted
+  check (removed_at is null or removed_at >= planted_at) not valid;
+
+-- ---------------------------------------------------------------------
+-- 5. Lignes existantes qui violent la chaîne (à corriger depuis l'application)
+-- ---------------------------------------------------------------------
+create or replace view public.date_chain_violations
+with (security_invoker = true) as
+select 'cross_fruits'::text as table_name, cf.id as row_id, cf.user_id,
+       'Récolte avant la pollinisation'::text as problem, cf.harvest_date as date_found, c.pollination_date as date_expected_after
+  from public.cross_fruits cf join public.crosses c on c.id = cf.cross_id
+ where cf.user_id = auth.uid()
+   and cf.harvest_date is not null and c.pollination_date is not null and cf.harvest_date < c.pollination_date
+union all
+select 'sowing_batches', b.id, b.user_id, 'Stratification avant la récolte du fruit', b.stratification_start_date, public.field_fruit_origin_date(b.fruit_id)
+  from public.sowing_batches b
+ where b.user_id = auth.uid()
+   and b.fruit_id is not null and b.stratification_start_date is not null
+   and b.stratification_start_date < public.field_fruit_origin_date(b.fruit_id)
+union all
+select 'sowing_batches', b.id, b.user_id, 'Semis avant la récolte du fruit', b.sowing_date, public.field_fruit_origin_date(b.fruit_id)
+  from public.sowing_batches b
+ where b.user_id = auth.uid()
+   and b.fruit_id is not null and b.sowing_date is not null
+   and b.sowing_date < public.field_fruit_origin_date(b.fruit_id)
+union all
+select 'seedlings', s.id, s.user_id, 'Levée avant le semis', s.germination_date, s.sowing_date
+  from public.seedlings s
+ where s.user_id = auth.uid()
+   and s.germination_date is not null and s.sowing_date is not null and s.germination_date < s.sowing_date
+union all
+select 'seedlings', s.id, s.user_id, 'Mise en place avant la levée', s.planted_date, coalesce(s.germination_date, s.sowing_date)
+  from public.seedlings s
+ where s.user_id = auth.uid()
+   and s.planted_date is not null and coalesce(s.germination_date, s.sowing_date) is not null
+   and s.planted_date < coalesce(s.germination_date, s.sowing_date)
+union all
+select 'field_intervention_tasks', t.id, t.user_id, 'Soin avant la mise en place du plant', t.done_date, pl.planted_at
+  from public.field_intervention_tasks t join public.field_plantings pl on pl.id = t.planting_id
+ where t.user_id = auth.uid() and t.done_date is not null and t.done_date < pl.planted_at
+union all
+select 'field_observations', o.id, o.user_id, 'Observation avant la mise en place du plant', o.observation_date, pl.planted_at
+  from public.field_observations o join public.field_plantings pl on pl.id = o.planting_id
+ where o.user_id = auth.uid() and o.observation_date < pl.planted_at;
+
+grant select on public.date_chain_violations to authenticated;
+
+notify pgrst, 'reload schema';
