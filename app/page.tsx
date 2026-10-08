@@ -10,6 +10,7 @@ import { Card, Badge, EmptyState, Field, Input } from "@/components/breeding/ui"
 import { CatalogFilterModal } from "@/components/breeding/catalog-filter-modal"
 import { VarietyEditModal } from "@/components/breeding/variety-edit-modal"
 import { CatalogOptionsMenu } from "@/components/breeding/options-menu"
+import { PlaceInZoneDialog, type PlacementResult } from "@/components/breeding/parcelle/place-in-zone-dialog"
 import { detectTraitsFromDescription, resolveTrait } from "@/lib/domain/description-traits"
 
 // Catalogue GÉNÉRAL Rosa Hybrida — table `varieties` (~1059 variétés, scrapées depuis
@@ -55,6 +56,10 @@ function CatalogPageContent() {
   const [colorFilters, setColorFilters] = useState<string[]>([])
   const [editingVariety, setEditingVariety] = useState<VarietyRecord | null>(null)
   const [collectionIds, setCollectionIds] = useState<Set<string>>(new Set())
+  // Nombre de plants en place par variété (serres et parcelles).
+  const [placedCounts, setPlacedCounts] = useState<Map<string, number>>(new Map())
+  const [placing, setPlacing] = useState<VarietyRecord | null>(null)
+  const [placementNotice, setPlacementNotice] = useState<string | null>(null)
   const [newVariety, setNewVariety] = useState({
     name: "",
     commercial_name: "",
@@ -71,19 +76,43 @@ function CatalogPageContent() {
 
   useEffect(() => {
     fetchVarieties()
-    supabase.from("catalog_collection").select("variety_id").then(({ data }) => {
-      setCollectionIds(new Set((data ?? []).map((row) => row.variety_id).filter(Boolean) as string[]))
-    })
+    refreshCollection()
   }, [])
 
-  async function toggleCollection(varietyId: string) {
-    if (collectionIds.has(varietyId)) {
-      await supabase.from("catalog_collection").delete().eq("variety_id", varietyId)
-      setCollectionIds((current) => { const next = new Set(current); next.delete(varietyId); return next })
-    } else {
-      const { error } = await supabase.from("catalog_collection").insert({ variety_id: varietyId })
-      if (!error) setCollectionIds((current) => new Set(current).add(varietyId))
+  async function refreshCollection() {
+    const [{ data: collection }, { data: plantings }] = await Promise.all([
+      supabase.from("catalog_collection").select("variety_id"),
+      supabase.from("field_plantings").select("variety_id").is("removed_at", null).not("variety_id", "is", null),
+    ])
+    setCollectionIds(new Set((collection ?? []).map((row) => row.variety_id).filter(Boolean) as string[]))
+    const counts = new Map<string, number>()
+    for (const row of plantings ?? []) {
+      const id = row.variety_id as string
+      counts.set(id, (counts.get(id) ?? 0) + 1)
     }
+    setPlacedCounts(counts)
+  }
+
+  useEffect(() => {
+    if (!placementNotice) return
+    const timer = setTimeout(() => setPlacementNotice(null), 5000)
+    return () => clearTimeout(timer)
+  }, [placementNotice])
+
+  function handlePlacementDone(result: PlacementResult) {
+    setPlacing(null)
+    setPlacementNotice(
+      result.placed > 0
+        ? `${result.placed} plant${result.placed > 1 ? "s" : ""} placé${result.placed > 1 ? "s" : ""} dans ${result.zoneName}.`
+        : "Ajoutée à votre collection.",
+    )
+    void refreshCollection()
+  }
+
+  // Retirer de la collection n'est proposé que pour une variété sans plant en place.
+  async function removeFromCollection(varietyId: string) {
+    await supabase.from("catalog_collection").delete().eq("variety_id", varietyId)
+    setCollectionIds((current) => { const next = new Set(current); next.delete(varietyId); return next })
   }
 
   async function fetchVarieties() {
@@ -391,11 +420,29 @@ function CatalogPageContent() {
                 onEdit={setEditingVariety}
                 onDelete={handleDeleteOne}
                 inCollection={collectionIds.has(variety.id)}
-                onToggleCollection={() => toggleCollection(variety.id)}
+                placedCount={placedCounts.get(variety.id) ?? 0}
+                onPlace={() => setPlacing(variety)}
+                onRemoveFromCollection={() => removeFromCollection(variety.id)}
               />
             ))}
           </div>
         )}
+
+      {placementNotice ? (
+        <p role="status" className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-md bg-foreground px-4 py-2 text-sm text-background shadow-lg">
+          {placementNotice}
+          <button type="button" onClick={() => setPlacementNotice(null)} className="ml-3 underline" aria-label="Fermer la notification">OK</button>
+        </p>
+      ) : null}
+
+      {placing ? (
+        <PlaceInZoneDialog
+          source={{ kind: "catalogue", id: placing.id, name: placing.commercial_name || placing.name }}
+          alreadyInCollection={collectionIds.has(placing.id)}
+          onClose={() => setPlacing(null)}
+          onDone={handlePlacementDone}
+        />
+      ) : null}
 
       <CatalogFilterModal
         open={showFilters}
@@ -432,13 +479,17 @@ function VarietyCard({
   onEdit,
   onDelete,
   inCollection,
-  onToggleCollection,
+  placedCount,
+  onPlace,
+  onRemoveFromCollection,
 }: {
   variety: VarietyRecord
   onEdit: (variety: VarietyRecord) => void
   onDelete: (variety: VarietyRecord) => void
   inCollection: boolean
-  onToggleCollection: () => void
+  placedCount: number
+  onPlace: () => void
+  onRemoveFromCollection: () => void
 }) {
   const photo = variety.photo_url ?? variety.image_url ?? null
   const detected = useMemo(() => detectTraitsFromDescription(variety.description), [variety.description])
@@ -500,15 +551,37 @@ function VarietyCard({
         </Card>
       </Link>
 
-      <button
-        type="button"
-        onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggleCollection() }}
-        className="absolute right-2 bottom-2 inline-flex items-center gap-1.5 rounded-md bg-background/95 px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-background"
-        aria-label={inCollection ? `Retirer ${variety.name} de ma collection` : `Ajouter ${variety.name} à ma collection`}
-      >
-        {inCollection ? <Check data-icon="inline-start" /> : <BookmarkPlus data-icon="inline-start" />}
-        {inCollection ? "Dans ma collection" : "Ajouter à ma collection"}
-      </button>
+      <div className="absolute right-2 bottom-2 flex items-center gap-1.5">
+        {inCollection && placedCount === 0 ? (
+          <button
+            type="button"
+            onClick={(event) => { event.preventDefault(); event.stopPropagation(); onRemoveFromCollection() }}
+            className="inline-flex items-center rounded-md bg-background/95 px-2 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:bg-background hover:text-foreground"
+            aria-label={`Retirer ${variety.name} de ma collection`}
+          >
+            Retirer
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={(event) => { event.preventDefault(); event.stopPropagation(); onPlace() }}
+          className="inline-flex items-center gap-1.5 rounded-md bg-background/95 px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-background"
+          aria-label={
+            placedCount > 0
+              ? `Ajouter un plant de ${variety.name} dans une serre ou une parcelle`
+              : inCollection
+                ? `Placer ${variety.name} dans une serre ou une parcelle`
+                : `Ajouter ${variety.name} à ma collection`
+          }
+        >
+          {placedCount > 0 ? <Check data-icon="inline-start" /> : <BookmarkPlus data-icon="inline-start" />}
+          {placedCount > 0
+            ? `Placée · ${placedCount} plant${placedCount > 1 ? "s" : ""} · ajouter`
+            : inCollection
+              ? "Dans ma collection · placer"
+              : "Ajouter à ma collection"}
+        </button>
+      </div>
 
       <div className="absolute left-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
         <button

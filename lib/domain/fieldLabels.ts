@@ -62,6 +62,10 @@ export const FIELD_TREATMENT_LABELS: Record<string, string> = {
   bouillie_bordelaise: "Bouillie bordelaise",
   insecticide_bio: "Insecticide biologique",
   fongicide_bio: "Fongicide biologique",
+  savon_noir: "Savon noir",
+  purin_ortie: "Purin d'ortie",
+  purin_prele: "Purin de prêle",
+  huile_neem: "Huile de neem",
   remede_phytotherapeutique: "Remède phytothérapeutique traditionnel",
   chimique_synthese: "Produit chimique de synthèse",
   autre_traitement: "Autre",
@@ -72,6 +76,8 @@ export const FERTILIZER_LABELS: Record<string, string> = {
   fumier_composte: "Fumier composté",
   engrais_rosiers: "Engrais organique pour rosiers",
   amendement_humifere: "Amendement humifère",
+  amendement_potassique_phosphore: "Amendement potassique et phosphoré",
+  amendement_mineral: "Amendement minéral de fin de cycle",
 }
 
 export const TREATMENT_REACTION_LABELS: Record<string, string> = {
@@ -96,6 +102,26 @@ export const PROGRAM_TYPE_LABELS: Record<string, string> = {
   curatif: "Curatif",
   preventif: "Préventif",
   fertilisation: "Fertilisation de fond",
+  hygiene: "Hygiène",
+}
+
+// Type de terreau pour semer un lot de graines (colonne sowing_batches.substrate).
+// Liste provisoire, ajustable sans migration.
+export const SUBSTRATE_LABELS: Record<string, string> = {
+  terreau_semis: "Terreau de semis",
+  terreau_universel: "Terreau universel",
+  terreau_rosiers: "Terreau pour rosiers",
+  terreau_sable: "Mélange terreau + sable",
+  tourbe_perlite: "Mélange tourbe + perlite",
+  sable: "Sable",
+  perlite_vermiculite: "Perlite / vermiculite",
+  terre_jardin: "Terre de jardin",
+}
+
+// Type de culture d'un lot semé.
+export const CULTURE_TYPE_LABELS: Record<string, string> = {
+  pot: "Contenant / pot",
+  pleine_terre: "Pleine terre",
 }
 
 export const PROGRAM_RESULT_LABELS: Record<string, string> = {

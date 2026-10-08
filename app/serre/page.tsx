@@ -17,6 +17,7 @@ import {
 } from "@/lib/domain/supabase-types"
 import type { Seedling } from "@/lib/domain/supabase-types"
 import { ZoneWorkspace } from "@/components/breeding/parcelle/zone-workspace"
+import { PlaceInZoneDialog, type PlacementResult } from "@/components/breeding/parcelle/place-in-zone-dialog"
 
 // ---------------------------------------------------------------------------
 // Un semis (seedling) porte désormais directement `cross_id`, `fruit_code`,
@@ -121,6 +122,8 @@ function SerreContent() {
   const [greenhouseFilter, setGreenhouseFilter] = useState("")
   const [editingId, setEditingId] = useState<string | null>(null)
   const [collectionIds, setCollectionIds] = useState<Set<string>>(new Set())
+  const [placedCounts, setPlacedCounts] = useState<Map<string, number>>(new Map())
+  const [placing, setPlacing] = useState<Seedling | null>(null)
 
   useEffect(() => {
     fetchData()
@@ -140,19 +143,28 @@ function SerreContent() {
     if (cr.data) setCrosses(cr.data as CrossInfo[])
     if (tbl.data) setTables(tbl.data as GreenhouseTable[])
     if (gh.data) setGreenhouses(gh.data as Greenhouse[])
-    const { data: collection } = await supabase.from("catalog_collection").select("seedling_id")
-    setCollectionIds(new Set((collection ?? []).map((row) => row.seedling_id).filter(Boolean) as string[]))
+    await refreshCollection()
     setLoading(false)
   }
 
-  async function toggleCollection(seedlingId: string) {
-    if (collectionIds.has(seedlingId)) {
-      await supabase.from("catalog_collection").delete().eq("seedling_id", seedlingId)
-      setCollectionIds((current) => { const next = new Set(current); next.delete(seedlingId); return next })
-    } else {
-      const { error } = await supabase.from("catalog_collection").insert({ seedling_id: seedlingId })
-      if (!error) setCollectionIds((current) => new Set(current).add(seedlingId))
+  async function refreshCollection() {
+    const [{ data: collection }, { data: plantings }] = await Promise.all([
+      supabase.from("catalog_collection").select("seedling_id"),
+      supabase.from("field_plantings").select("seedling_id").is("removed_at", null).not("seedling_id", "is", null),
+    ])
+    setCollectionIds(new Set((collection ?? []).map((row) => row.seedling_id).filter(Boolean) as string[]))
+    const counts = new Map<string, number>()
+    for (const row of plantings ?? []) {
+      const id = row.seedling_id as string
+      counts.set(id, (counts.get(id) ?? 0) + 1)
     }
+    setPlacedCounts(counts)
+  }
+
+  // Retirer de la collection n'est proposé que pour un semis sans plant en place.
+  async function removeFromCollection(seedlingId: string) {
+    await supabase.from("catalog_collection").delete().eq("seedling_id", seedlingId)
+    setCollectionIds((current) => { const next = new Set(current); next.delete(seedlingId); return next })
   }
 
   // Un lot de semis (sowing_batches) est retrouvé par couple/fruit plutôt
@@ -364,12 +376,23 @@ function SerreContent() {
                 onDelete={() => deleteSeedling(s.id)}
                 onPromote={() => promoteToVariety(s)}
                 inCollection={collectionIds.has(s.id)}
-                onToggleCollection={() => toggleCollection(s.id)}
+                placedCount={placedCounts.get(s.id) ?? 0}
+                onPlace={() => setPlacing(s)}
+                onRemoveFromCollection={() => removeFromCollection(s.id)}
               />
             )
           })}
         </div>
       )}
+
+      {placing ? (
+        <PlaceInZoneDialog
+          source={{ kind: "semis", id: placing.id, name: placing.seedling_code || placing.code }}
+          alreadyInCollection={collectionIds.has(placing.id)}
+          onClose={() => setPlacing(null)}
+          onDone={(_result: PlacementResult) => { setPlacing(null); void refreshCollection() }}
+        />
+      ) : null}
     </div>
   )
 }
@@ -387,7 +410,9 @@ function SeedlingCard({
   onDelete,
   onPromote,
   inCollection,
-  onToggleCollection,
+  placedCount,
+  onPlace,
+  onRemoveFromCollection,
 }: {
   seedling: Seedling
   cross: CrossInfo | null
@@ -401,7 +426,9 @@ function SeedlingCard({
   onDelete: () => void
   onPromote: () => void
   inCollection: boolean
-  onToggleCollection: () => void
+  placedCount: number
+  onPlace: () => void
+  onRemoveFromCollection: () => void
 }) {
   const currentEvaluationStatus = seedling.evaluation_status ?? legacyStatusToEvaluation(seedling.status)
 
@@ -572,14 +599,30 @@ function SeedlingCard({
           {EVALUATION_STATUS_LABELS[currentEvaluationStatus] ?? currentEvaluationStatus}
         </Badge>
         {seedling.is_promoted_to_variety ? <Badge tone="success">Promu au catalogue général</Badge> : null}
+        {inCollection && placedCount === 0 ? (
+          <Button size="sm" variant="ghost" onClick={onRemoveFromCollection} aria-label={`Retirer ${displayCode} de ma collection`}>
+            Retirer
+          </Button>
+        ) : null}
         <Button
           size="sm"
           variant={inCollection ? "secondary" : "outline"}
-          onClick={onToggleCollection}
+          onClick={onPlace}
           className="gap-1"
-          aria-label={inCollection ? `Retirer ${displayCode} de ma collection` : `Ajouter ${displayCode} à ma collection`}
+          aria-label={
+            placedCount > 0
+              ? `Ajouter un plant de ${displayCode} dans une serre ou une parcelle`
+              : inCollection
+                ? `Placer ${displayCode} dans une serre ou une parcelle`
+                : `Ajouter ${displayCode} à ma collection`
+          }
         >
-          <BookmarkPlus className="size-3.5" /> {inCollection ? "Dans ma collection" : "Ajouter à ma collection"}
+          <BookmarkPlus className="size-3.5" />{" "}
+          {placedCount > 0
+            ? `Placé · ${placedCount} plant${placedCount > 1 ? "s" : ""} · ajouter`
+            : inCollection
+              ? "Dans ma collection · placer"
+              : "Ajouter à ma collection"}
         </Button>
         <div className="flex gap-1">
           {!seedling.is_promoted_to_variety && currentEvaluationStatus === "Sélectionné" ? (

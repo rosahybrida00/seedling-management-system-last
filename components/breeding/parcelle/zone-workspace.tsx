@@ -9,7 +9,11 @@ import { GERMINATED_SEEDLING_STATUSES } from "@/lib/domain/fieldLabels"
 import { FlashSheet } from "@/components/breeding/parcelle/flash-sheet"
 import { ZoneView } from "@/components/breeding/parcelle/zone-view"
 import { PlantView } from "@/components/breeding/parcelle/plant-view"
+import { PlantSheet } from "@/components/breeding/parcelle/plant-sheet"
+import { tasksAvailable } from "@/lib/services/plantSheetService"
+import { withOriginDates } from "@/lib/services/seedLotRules"
 import { ManageView } from "@/components/breeding/parcelle/manage-view"
+import { ParentsToPlace } from "@/components/breeding/parcelle/parents-to-place"
 import type {
   Greenhouse,
   GreenhouseTable,
@@ -65,6 +69,8 @@ export function ZoneWorkspace() {
   const [zoneKey, setZoneKey] = useState<string | null>(null)
   const [plantingId, setPlantingId] = useState<string | null>(null)
   const [flashOpen, setFlashOpen] = useState(false)
+  // Fiche unifiée (frise) disponible seulement si la migration 033 est appliquée.
+  const [tasksReady, setTasksReady] = useState(false)
   const [manageSubTab, setManageSubTab] = useState<"serres" | "parcelles">("serres")
   const [openCreateParcelle, setOpenCreateParcelle] = useState(false)
 
@@ -75,6 +81,7 @@ export function ZoneWorkspace() {
   }
 
   useEffect(() => { fetchData() }, [])
+  useEffect(() => { tasksAvailable().then(setTasksReady) }, [])
 
   async function fetchData() {
     setLoading(true)
@@ -89,8 +96,8 @@ export function ZoneWorkspace() {
       supabase.from("varieties").select("id,name,commercial_name,obtenteur,type,color,flowering,fragrance,parents,parentage,description,photo_url,image_url"),
       supabase.from("varieties_photos").select("id,variety_id,photo_url,is_primary"),
       supabase.from("seedlings").select("*").in("status", [...GERMINATED_SEEDLING_STATUSES]),
-      supabase.from("crosses").select("id,seed_parent,pollen_parent"),
-      supabase.from("sowing_batches").select("id,fruit_id,cross_id,fruit_code,seed_count,original_seed_count,sowing_date,table_id,parcelle_id,location_type,stratification_methods,stratification_start_date,stratification_end_date").order("sowing_date", { ascending: false }),
+      supabase.from("crosses").select("id,seed_parent,pollen_parent,pollination_date"),
+      supabase.from("sowing_batches").select("id,fruit_id,cross_id,fruit_code,seed_count,original_seed_count,sowing_date,harvest_date,substrate,table_id,parcelle_id,location_type,stratification_methods,stratification_start_date,stratification_end_date").order("sowing_date", { ascending: false }),
       supabase.from("sensors").select("id,greenhouse_id,name,sensor_type,last_value,last_reading_at,is_active"),
       supabase.from("user_settings").select("alerts_enabled,frost_threshold,heat_threshold").maybeSingle(),
     ])
@@ -102,7 +109,15 @@ export function ZoneWorkspace() {
       setSeedLotError(`Suivi des lots indisponible : exécutez la migration 029 dans Supabase. ${seedLotsResult.error.message}`)
     } else {
       setSeedLotError(null)
-      if (seedLotsResult.data) setSeedLots(seedLotsResult.data as SeedLot[])
+      if (seedLotsResult.data) {
+        const lots = seedLotsResult.data as SeedLot[]
+        // Date de récolte du fruit (à défaut, pollinisation) : borne basse des dates de stratification et de semis.
+        const fruitIds = [...new Set(lots.map((lot) => lot.fruit_id).filter((id): id is string => Boolean(id)))]
+        const { data: fruitRows } = fruitIds.length > 0
+          ? await supabase.from("cross_fruits").select("id,harvest_date").in("id", fruitIds)
+          : { data: [] }
+        setSeedLots(withOriginDates(lots, (fruitRows ?? []) as Array<{ id: string; harvest_date: string | null }>, (cr.data ?? []) as CrossParents[]))
+      }
     }
     if (cr.data) setCrosses(cr.data as CrossParents[])
     if (ob.data) {
@@ -287,6 +302,7 @@ export function ZoneWorkspace() {
               </div>
             }
           />
+          <ParentsToPlace onPlaced={fetchData} />
           {visibleZones.length === 0 ? (
             <EmptyState icon={<MapPin className="size-8" />} title={watchlistOnly ? "Rien à surveiller" : "Aucune zone"} description={watchlistOnly ? "Aucune zone n'a d'alerte ou de rappel en attente." : "Créez une serre ou une parcelle dans « Gérer »."} />
           ) : (
@@ -328,7 +344,22 @@ export function ZoneWorkspace() {
         />
       ) : null}
 
-      {view === "plant" && currentPlanting ? (
+      {view === "plant" && currentPlanting && tasksReady ? (
+        <PlantSheet
+          planting={currentPlanting} label={plantingLabel(currentPlanting)}
+          details={plantingDetails(currentPlanting)}
+          siblings={plantings.filter((item) =>
+            currentPlanting.variety_id
+              ? item.variety_id === currentPlanting.variety_id
+              : currentPlanting.seedling_id != null && item.seedling_id === currentPlanting.seedling_id,
+          )}
+          greenhouses={greenhouses} tables={tables} parcelles={parcelles}
+          onBack={() => { setView("zone"); setPlantingId(null) }}
+          onRefresh={fetchData}
+        />
+      ) : null}
+
+      {view === "plant" && currentPlanting && !tasksReady ? (
         <PlantView
           planting={currentPlanting} label={plantingLabel(currentPlanting)}
           details={plantingDetails(currentPlanting)}

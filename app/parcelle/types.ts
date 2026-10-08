@@ -33,6 +33,9 @@ export interface SeedLot {
   seed_count: number
   original_seed_count: number | null
   sowing_date: string | null
+  /** Date de récolte du fruit : borne basse de toute la chaîne stratification, semis, levée. */
+  harvest_date?: string | null
+  substrate?: string | null
   table_id: string | null
   parcelle_id: string | null
   location_type: "pot" | "pleine_terre" | null
@@ -45,6 +48,7 @@ export interface CrossParents {
   id: string
   seed_parent: string | null
   pollen_parent: string | null
+  pollination_date?: string | null
 }
 
 export interface FieldPlanting {
@@ -96,11 +100,15 @@ export interface FieldProgram {
   planting_id: string | null
   greenhouse_id: string | null
   parcelle_id: string | null
-  program_type: "curatif" | "preventif" | "fertilisation"
+  program_type: "curatif" | "preventif" | "fertilisation" | "hygiene"
   product_name: string
   start_date: string
   treatment_codes?: string[] | null
   fertilizer_code?: string | null
+  /** Calendrier type d'origine (migration 033). */
+  template_id?: string | null
+  template_step_id?: string | null
+  season_year?: number | null
   result: string | null
   notes: string
 }

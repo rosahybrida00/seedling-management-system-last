@@ -15,14 +15,17 @@ import {
 import { getWeatherForDate, type DailyWeather } from "@/lib/services/weatherService"
 import type { FieldObservation } from "@/app/parcelle/types"
 
-export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId, observations, onRefresh }: {
+export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId, observations, onRefresh, showList = true, startOpen = false }: {
   plantingId: string
   greenhouseTableId: string | null
   parcelleId: string | null
   observations: FieldObservation[]
   onRefresh: () => void
+  /** Faux : seul le formulaire est affiché (la liste vit ailleurs, ex. dans la frise du plant). */
+  showList?: boolean
+  startOpen?: boolean
 }) {
-  const [creating, setCreating] = useState(false)
+  const [creating, setCreating] = useState(startOpen)
   const [observationDate, setObservationDate] = useState(new Date().toISOString().split("T")[0])
   const [interventionDate, setInterventionDate] = useState("")
   const [disease, setDisease] = useState<string[]>([])
@@ -82,7 +85,7 @@ export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId,
         <Card className="p-4">
           <button onClick={() => setCreating(false)} className="mb-3 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" /> Retour</button>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Date de l'observation"><Input type="date" value={observationDate} onChange={(e) => setObservationDate(e.target.value)} /></Field>
+            <Field label="Date de l'observation"><Input type="date" max={new Date().toISOString().split("T")[0]} value={observationDate} onChange={(e) => setObservationDate(e.target.value)} /></Field>
             <Field label="Date d'intervention"><Input type="date" value={interventionDate} onChange={(e) => setInterventionDate(e.target.value)} /></Field>
           </div>
           {weather ? (
@@ -107,7 +110,7 @@ export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId,
         </Card>
       ) : null}
 
-      {observations.length === 0 ? (
+      {!showList ? null : observations.length === 0 ? (
         <EmptyState icon={<CalendarClock className="size-8" />} title="Aucune observation" description="Enregistrez le premier relevé sanitaire/phyto de ce plant." />
       ) : (
         <div className="grid gap-2">

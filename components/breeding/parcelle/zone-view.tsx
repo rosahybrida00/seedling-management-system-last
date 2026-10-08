@@ -1,22 +1,25 @@
 "use client"
 
-// Vue d'une zone : ses plants, agenda groupé, ajout de plantation.
+// Vue d'une zone en trois onglets : Variétés, Graines à semer, Programme.
+// Chaque onglet n'affiche que ce dont il a besoin, sans bouton « retour » interne.
 
 import { useState, useEffect } from "react"
 import { Plus, Sprout, ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, Badge, Field, Input, EmptyState, Select, SectionHeading } from "@/components/breeding/ui"
+import { Card, Badge, Field, Input, EmptyState, Select } from "@/components/breeding/ui"
 import { formatDate } from "@/components/breeding/format"
 import { supabase } from "@/lib/supabase-client"
 import { GERMINATED_SEEDLING_STATUSES, SOIL_TYPE_LABELS } from "@/lib/domain/fieldLabels"
-import { AgendaSection } from "@/components/breeding/parcelle/agenda-section"
-import { ZoneSeedLotTracking } from "@/components/breeding/serre/seed-lot-tracking"
+import { ZoneProgramPanel } from "@/components/breeding/parcelle/zone-program-panel"
+import { SeedLotPicker } from "@/components/breeding/serre/seed-lot-picker"
+import { groupLotsForZone } from "@/lib/services/seedLotRules"
+import { daysBetween, todayIso } from "@/lib/services/plantTimeline"
 import type {
   Zone, Greenhouse, GreenhouseTable, Parcelle, VarietyOption,
   FieldPlanting, FieldProgram, FieldIntervention, FieldObservation, SeedLot, CrossParents,
 } from "@/app/parcelle/types"
 
-export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, seedLots = [], seedLotError = null, crossMap = new Map<string, CrossParents>(), plantingLabel, programsByPlanting, interventionsByProgram, observationsByPlanting, zonePrograms, onBack, onOpenPlant, onRefresh }: {
+export function ZoneView({ zone, plantings, tables, seedLots = [], seedLotError = null, crossMap = new Map<string, CrossParents>(), plantingLabel, interventionsByProgram, observationsByPlanting, zonePrograms, onBack, onOpenPlant, onRefresh }: {
   zone: Zone; plantings: FieldPlanting[]; greenhouses: Greenhouse[]; tables: GreenhouseTable[]; parcelles: Parcelle[]
   seedLots?: SeedLot[]; seedLotError?: string | null; crossMap?: Map<string, CrossParents>
   plantingLabel: (p: FieldPlanting) => string
@@ -25,6 +28,7 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, seed
   zonePrograms: FieldProgram[]
   onBack: () => void; onOpenPlant: (id: string) => void; onRefresh: () => void
 }) {
+  const [tab, setTab] = useState<"varietes" | "graines" | "programme">("varietes")
   const [creating, setCreating] = useState(false)
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<VarietyOption | null>(null)
@@ -40,6 +44,11 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, seed
 
   const name = zone.kind === "serre" ? zone.greenhouse.name : zone.parcelle.name
   const zoneTables = zone.kind === "serre" ? tables.filter((t) => t.greenhouse_id === zone.greenhouse.id) : []
+  const lotGroups = groupLotsForZone(seedLots, { kind: zone.kind, id: zone.kind === "serre" ? zone.greenhouse.id : zone.parcelle.id }, new Set(zoneTables.map((t) => t.id)))
+  const lotCount = lotGroups.toSow.length + lotGroups.sownHere.length
+  const today = todayIso()
+  const openRows = zonePrograms.flatMap((program) => (interventionsByProgram.get(program.id) ?? []).filter((intervention) => !intervention.done))
+  const overdueCount = openRows.filter((intervention) => intervention.due_date != null && daysBetween(today, intervention.due_date) < 0).length
 
   useEffect(() => {
     if (selected) { setShowSugg(false); return }
@@ -110,9 +119,32 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, seed
       <button onClick={onBack} className="flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" /> Retour</button>
       <div className="flex items-center justify-between">
         <h2 className="font-serif text-xl text-foreground">{name}</h2>
-        <Button size="sm" onClick={() => setCreating((v) => !v)} className="gap-1.5"><Plus className="size-4" /> Plant</Button>
+        {tab === "varietes" ? <Button size="sm" onClick={() => setCreating((v) => !v)} className="gap-1.5"><Plus className="size-4" /> Plant</Button> : null}
       </div>
 
+      <div role="tablist" aria-label="Sections de la zone" className="flex gap-1 border-b border-border">
+        {([
+          ["varietes", `Variétés (${plantings.length})`],
+          ["graines", `Graines à semer (${lotCount})`],
+          ["programme", `Programme (${openRows.length} à appliquer)`],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            role="tab"
+            type="button"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={tab === key
+              ? "-mb-px border-b-2 border-primary px-3 py-2 text-sm font-medium text-foreground"
+              : "-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-muted-foreground hover:text-foreground"}
+          >
+            {label}
+            {key === "programme" && overdueCount > 0 ? <span className="ml-1.5 inline-block size-2 rounded-full bg-destructive align-middle" aria-label={`${overdueCount} en retard`} /> : null}
+          </button>
+        ))}
+      </div>
+
+      {tab === "varietes" ? <>
       {creating ? (
         <Card className="p-4">
           {createError ? <p role="alert" className="mb-3 text-sm text-destructive">{createError}</p> : null}
@@ -213,21 +245,21 @@ export function ZoneView({ zone, plantings, greenhouses, tables, parcelles, seed
         </div>
       )}
 
-      <ZoneSeedLotTracking zone={zone} batches={seedLots} loadError={seedLotError} crossMap={crossMap} greenhouses={greenhouses} tables={tables} parcelles={parcelles} onRefresh={onRefresh} />
+      </> : null}
 
-      <SectionHeading title="Programme collectif de la zone" description="Traitement ou fertilisation appliqué à toute la serre/parcelle, en plus des programmes propres à chaque variété." />
-      <AgendaSection
-        target={zone.kind === "serre" ? { greenhouse_id: zone.greenhouse.id } : { parcelle_id: zone.parcelle.id }}
-        locationSnapshot={{
-          greenhouse_id: zone.kind === "serre" ? zone.greenhouse.id : null,
-          greenhouse_table_id: null,
-          parcelle_id: zone.kind === "parcelle" ? zone.parcelle.id : null,
-        }}
-        observations={plantings.flatMap((planting) => observationsByPlanting.get(planting.id) ?? []).sort((left, right) => right.observation_date.localeCompare(left.observation_date))}
-        programs={zonePrograms}
-        interventionsByProgram={interventionsByProgram}
-        onRefresh={onRefresh}
-      />
+      {tab === "graines" ? (
+        <SeedLotPicker zone={zone} batches={seedLots} loadError={seedLotError} crossMap={crossMap} tables={tables} onRefresh={onRefresh} />
+      ) : null}
+
+      {tab === "programme" ? (
+        <ZoneProgramPanel
+          zone={zone}
+          programs={zonePrograms}
+          interventionsByProgram={interventionsByProgram}
+          observations={plantings.flatMap((planting) => observationsByPlanting.get(planting.id) ?? []).sort((left, right) => right.observation_date.localeCompare(left.observation_date))}
+          onRefresh={onRefresh}
+        />
+      ) : null}
     </div>
   )
 }

@@ -1,0 +1,20 @@
+Page Serre & Parcelle : suggestions prêtes à l'emploi, "Appliqué", lots à semer sur sélection,
+fiche variété unifiée. Copier ce dossier PAR-DESSUS la racine du projet (mêmes chemins).
+
+Prérequis base de données : migrations 033 puis 034 (déjà livrées). Aucune nouvelle migration.
+
+Fichiers NOUVEAUX :
+  lib/services/suggestionEngine.ts, programService.ts, seedLotRules.ts
+  components/breeding/parcelle/suggestions-ui.tsx, zone-program-panel.tsx
+  components/breeding/serre/seed-lot-picker.tsx
+
+Fichiers REMPLACÉS (contiennent aussi les livraisons précédentes) :
+  lib/domain/fieldLabels.ts, app/parcelle/types.ts
+  lib/services/plantTimeline.ts, plantSheetService.ts
+  components/breeding/parcelle/plant-sheet.tsx, zone-view.tsx, zone-workspace.tsx, observations-section.tsx
+
+Déjà livrés avant, repris pour que le dossier soit complet :
+  lib/domain/programTemplates.ts, lib/services/placementService.ts
+  components/breeding/parcelle/place-in-zone-dialog.tsx, parents-to-place.tsx
+
+Après copie : npx tsc --noEmit   (doit passer sans message)
