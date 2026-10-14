@@ -1,5 +1,5 @@
-# Installe la livraison "serre-parcelle-v3" dans le projet.
-# 1) Telechargez serre-parcelle-v3.zip (il reste dans Telechargements, pas besoin de le decompresser).
+# Installe la livraison "serre-parcelle-v4" dans le projet.
+# 1) Telechargez serre-parcelle-v4.zip (il reste dans Telechargements, pas besoin de le decompresser).
 # 2) Lancez ce script depuis la racine du projet (le dossier qui contient package.json) :
 #       .\installer.ps1
 # Le script decompresse le zip, copie chaque fichier a sa place, verifie que c'est la bonne
@@ -14,46 +14,55 @@ if (-not (Test-Path (Join-Path $racine "package.json"))) {
 $zip = $null
 foreach ($dossier in @("$env:USERPROFILE\Downloads", "$env:USERPROFILE\Desktop", $racine)) {
   if (Test-Path $dossier) {
-    $zip = Get-ChildItem $dossier -Filter "serre-parcelle-v3*.zip" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $zip = Get-ChildItem $dossier -Filter "serre-parcelle-v4*.zip" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($zip) { break }
   }
 }
 if (-not $zip) {
-  Write-Host "ERREUR : serre-parcelle-v3.zip introuvable (cherche dans Telechargements, Bureau et le projet)."
+  Write-Host "ERREUR : serre-parcelle-v4.zip introuvable (cherche dans Telechargements, Bureau et le projet)."
   exit 1
 }
 Write-Host ("Zip utilise : " + $zip.FullName)
 
-$tmp = Join-Path $env:TEMP "serre-parcelle-v3"
+$tmp = Join-Path $env:TEMP "serre-parcelle-v4"
 if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
 Expand-Archive -Path $zip.FullName -DestinationPath $tmp -Force
 
 # fichier = chemin dans le projet ; marque = texte propre a la bonne version
 $fichiers = @(
-  @{ f = "lib/domain/fieldLabels.ts";                              m = "SUBSTRATE_LABELS" },
-  @{ f = "lib/domain/programTemplates.ts";                         m = "PARCELLE_CALENDAR" },
-  @{ f = "lib/domain/treatmentMatrix.ts";                          m = "SIGNAL_RULES" },
-  @{ f = "app/parcelle/types.ts";                                  m = "harvest_date?: string | null" },
-  @{ f = "app/globals.css";                                        m = "--border-strong" },
-  @{ f = "components/ui/button.tsx";                               m = "border-border-strong" },
-  @{ f = "lib/services/suggestionEngine.ts";                       m = "weatherSuggestions" },
-  @{ f = "lib/services/treatmentPlanner.ts";                       m = "planTreatment" },
-  @{ f = "lib/services/programService.ts";                         m = "acceptPlan" },
-  @{ f = "lib/services/plantTimeline.ts";                          m = '"tache" | "observation" | "croisement"' },
-  @{ f = "lib/services/plantSheetService.ts";                      m = "export async function weatherIdFor" },
-  @{ f = "lib/services/plantGrouping.ts";                          m = "groupPlantings" },
-  @{ f = "lib/services/seedLotRules.ts";                           m = "withOriginDates" },
-  @{ f = "lib/services/placementService.ts";                       m = "rankZones" },
-  @{ f = "components/breeding/parcelle/suggestions-ui.tsx";        m = "onOpenPlan" },
+  @{ f = "lib/domain/fieldLabels.ts"; m = "SUBSTRATE_LABELS" },
+  @{ f = "lib/domain/programTemplates.ts"; m = "PARCELLE_CALENDAR" },
+  @{ f = "lib/domain/treatmentMatrix.ts"; m = "SIGNAL_RULES" },
+  @{ f = "app/parcelle/types.ts"; m = "harvest_date?: string | null" },
+  @{ f = "app/globals.css"; m = "--border-strong" },
+  @{ f = "components/ui/button.tsx"; m = "border-border-strong" },
+  @{ f = "lib/navigation.ts"; m = "parseZoneNav" },
+  @{ f = "lib/services/suggestionEngine.ts"; m = "weatherSuggestions" },
+  @{ f = "lib/services/treatmentPlanner.ts"; m = "planTreatment" },
+  @{ f = "lib/services/programService.ts"; m = "acceptPlan" },
+  @{ f = "lib/services/plantTimeline.ts"; m = "describeTask" },
+  @{ f = "lib/services/plantSheetService.ts"; m = "program_notes" },
+  @{ f = "lib/services/plantGrouping.ts"; m = "groupPlantings" },
+  @{ f = "lib/services/seedLotRules.ts"; m = "withOriginDates" },
+  @{ f = "lib/services/placementService.ts"; m = "rankZones" },
+  @{ f = "lib/services/narrative.ts"; m = "describeObservation" },
+  @{ f = "lib/services/notificationService.ts"; m = "buildNotifications" },
+  @{ f = "lib/services/notificationLoader.ts"; m = "loadNotifications" },
+  @{ f = "lib/services/weatherBannerService.ts"; m = "loadBannerWeather" },
+  @{ f = "components/notifications/notification-bell.tsx"; m = "NotificationBell" },
+  @{ f = "components/weather/weather-banner.tsx"; m = "loadBannerWeather" },
+  @{ f = "components/layout/app-shell.tsx"; m = "NotificationBell" },
+  @{ f = "app/serre/page.tsx"; m = "NAVIGATE_EVENT" },
+  @{ f = "components/breeding/parcelle/suggestions-ui.tsx"; m = "onOpenPlan" },
   @{ f = "components/breeding/parcelle/treatment-plan-dialog.tsx"; m = "TreatmentPlanDialog" },
-  @{ f = "components/breeding/parcelle/zone-program-panel.tsx";    m = "acceptPlan" },
-  @{ f = "components/breeding/parcelle/plant-sheet.tsx";           m = "pendingPlanKey" },
-  @{ f = "components/breeding/parcelle/zone-view.tsx";             m = "groupPlantings" },
-  @{ f = "components/breeding/parcelle/zone-workspace.tsx";        m = "plantScope" },
-  @{ f = "components/breeding/parcelle/observations-section.tsx";  m = "SavedObservation" },
-  @{ f = "components/breeding/parcelle/place-in-zone-dialog.tsx";  m = "PlaceInZoneDialog" },
-  @{ f = "components/breeding/parcelle/parents-to-place.tsx";      m = "ParentsToPlace" },
-  @{ f = "components/breeding/serre/seed-lot-picker.tsx";          m = "SeedLotPicker" }
+  @{ f = "components/breeding/parcelle/zone-program-panel.tsx"; m = "acceptPlan" },
+  @{ f = "components/breeding/parcelle/plant-sheet.tsx"; m = "showPlants" },
+  @{ f = "components/breeding/parcelle/zone-view.tsx"; m = "initialTab" },
+  @{ f = "components/breeding/parcelle/zone-workspace.tsx"; m = "hasLoaded" },
+  @{ f = "components/breeding/parcelle/observations-section.tsx"; m = "describeObservation" },
+  @{ f = "components/breeding/parcelle/place-in-zone-dialog.tsx"; m = "PlaceInZoneDialog" },
+  @{ f = "components/breeding/parcelle/parents-to-place.tsx"; m = "ParentsToPlace" },
+  @{ f = "components/breeding/serre/seed-lot-picker.tsx"; m = "SeedLotPicker" }
 )
 
 $erreurs = 0

@@ -1,125 +1,34 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Thermometer, Droplets, Sun, Cloud, MapPin, RefreshCw } from "lucide-react"
-import { supabase } from "@/lib/supabase-client"
-import type { WeatherData } from "@/lib/domain/supabase-types"
+import { PROBLEM_MESSAGES, ageLabel, loadBannerWeather, type WeatherResult } from "@/lib/services/weatherBannerService"
 
 export function WeatherBanner() {
-  const [weather, setWeather] = useState<WeatherData | null>(null)
+  const [result, setResult] = useState<WeatherResult | null>(null)
   const [loading, setLoading] = useState(true)
+  const mounted = useRef(true)
 
-  useEffect(() => {
-    fetchWeather()
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    // loadBannerWeather ne lève jamais d'exception : plus d'écran d'erreur si le réseau est coupé.
+    const next = await loadBannerWeather()
+    if (!mounted.current) return
+    setResult(next)
+    setLoading(false)
   }, [])
 
-  async function fetchWeather() {
-    setLoading(true)
-    try {
-      // Try GPS first
-      if ("geolocation" in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          async (pos) => {
-            const { latitude, longitude } = pos.coords
-            await fetchFromOpenMeteo(latitude, longitude, "gps", "Position GPS")
-          },
-          async () => {
-            await fetchFromProfile()
-          },
-          { timeout: 5000 },
-        )
-      } else {
-        await fetchFromProfile()
-      }
-    } catch {
-      setWeather({
-        temperature: null,
-        humidity: null,
-        uvIndex: null,
-        cloudCover: null,
-        location: "Indisponible",
-        source: "manual",
-      })
-    } finally {
-      setLoading(false)
-    }
-  }
+  useEffect(() => {
+    mounted.current = true
+    void refresh()
+    // Dès que la connexion revient, la météo se met à jour toute seule.
+    const onOnline = () => { void refresh() }
+    window.addEventListener("online", onOnline)
+    return () => { mounted.current = false; window.removeEventListener("online", onOnline) }
+  }, [refresh])
 
-  async function fetchFromProfile() {
-    try {
-      const { data: userData } = await supabase.auth.getUser()
-      if (!userData.user) {
-        setWeather({
-          temperature: null,
-          humidity: null,
-          uvIndex: null,
-          cloudCover: null,
-          location: "Connectez-vous",
-          source: "manual",
-        })
-        return
-      }
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("city, postal_code")
-        .eq("id", userData.user.id)
-        .maybeSingle()
-
-      const city = profile?.city || profile?.postal_code
-      if (!city) {
-        setWeather({
-          temperature: null,
-          humidity: null,
-          uvIndex: null,
-          cloudCover: null,
-          location: "Ville non renseignée",
-          source: "manual",
-        })
-        return
-      }
-
-      // Geocode city name via Open-Meteo geocoding API
-      const geoRes = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=fr&format=json`,
-      )
-      if (!geoRes.ok) throw new Error("geocoding failed")
-      const geoData = await geoRes.json()
-      const geo = geoData?.results?.[0]
-      if (!geo) throw new Error("city not found")
-
-      await fetchFromOpenMeteo(geo.latitude, geo.longitude, "profile", geo.name)
-    } catch {
-      setWeather({
-        temperature: null,
-        humidity: null,
-        uvIndex: null,
-        cloudCover: null,
-        location: "Indisponible",
-        source: "manual",
-      })
-    }
-  }
-
-  async function fetchFromOpenMeteo(
-    lat: number,
-    lon: number,
-    source: "gps" | "profile",
-    locationName: string,
-  ) {
-    const res = await fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,uv_index,cloud_cover`,
-    )
-    if (!res.ok) throw new Error("weather fetch failed")
-    const data = await res.json()
-    setWeather({
-      temperature: data?.current?.temperature_2m ?? null,
-      humidity: data?.current?.relative_humidity_2m ?? null,
-      uvIndex: data?.current?.uv_index ?? null,
-      cloudCover: data?.current?.cloud_cover ?? null,
-      location: locationName,
-      source,
-    })
-  }
+  const weather = result?.weather ?? null
+  const problem = result?.problem ? PROBLEM_MESSAGES[result.problem] : null
 
   return (
     <div className="border-b border-border bg-primary/5 px-4 py-2">
@@ -128,36 +37,22 @@ export function WeatherBanner() {
           <MapPin className="size-3.5 text-primary" />
           {weather?.location ?? "Localisation…"}
         </div>
-        {loading ? (
+        {loading && !weather ? (
           <span className="text-xs text-muted-foreground">Chargement météo…</span>
         ) : weather?.temperature != null ? (
           <>
-            <WeatherMetric
-              icon={<Thermometer className="size-3.5" />}
-              label="Temp."
-              value={weather.temperature != null ? `${Math.round(weather.temperature)}°C` : "—"}
-            />
-            <WeatherMetric
-              icon={<Droplets className="size-3.5" />}
-              label="Humidité"
-              value={weather.humidity != null ? `${Math.round(weather.humidity)}%` : "—"}
-            />
-            <WeatherMetric
-              icon={<Sun className="size-3.5" />}
-              label="UV"
-              value={weather.uvIndex != null ? String(Math.round(weather.uvIndex)) : "—"}
-            />
-            <WeatherMetric
-              icon={<Cloud className="size-3.5" />}
-              label="Couverture"
-              value={weather.cloudCover != null ? `${Math.round(weather.cloudCover)}%` : "—"}
-            />
+            <WeatherMetric icon={<Thermometer className="size-3.5" />} label="Temp." value={`${Math.round(weather.temperature)}°C`} />
+            <WeatherMetric icon={<Droplets className="size-3.5" />} label="Humidité" value={weather.humidity != null ? `${Math.round(weather.humidity)}%` : "—"} />
+            <WeatherMetric icon={<Sun className="size-3.5" />} label="UV" value={weather.uvIndex != null ? String(Math.round(weather.uvIndex)) : "—"} />
+            <WeatherMetric icon={<Cloud className="size-3.5" />} label="Couverture" value={weather.cloudCover != null ? `${Math.round(weather.cloudCover)}%` : "—"} />
+            {result?.stale ? <span role="status" className="text-xs text-muted-foreground">Dernière météo connue, {ageLabel(result.measuredAt)}</span> : null}
           </>
         ) : (
           <span className="text-xs text-muted-foreground">Météo indisponible</span>
         )}
+        {problem ? <span role="status" className="text-xs text-muted-foreground">{problem}</span> : null}
         <button
-          onClick={fetchWeather}
+          onClick={() => void refresh()}
           className="ml-auto flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
           title="Rafraîchir"
         >

@@ -52,7 +52,7 @@ export async function tasksAvailable(): Promise<boolean> {
 
 type Row = Record<string, unknown>
 
-async function selectIn(table: string, columns: string, column: string, ids: string[]): Promise<{ data: Row[]; error: { code?: string; message: string } | null }> {
+export async function selectIn(table: string, columns: string, column: string, ids: string[]): Promise<{ data: Row[]; error: { code?: string; message: string } | null }> {
   if (ids.length === 0) return { data: [], error: null }
   const results = await Promise.all(chunk(ids).map((part) => supabase.from(table).select(columns).in(column, part)))
   const failed = results.find((result) => result.error)
@@ -65,7 +65,7 @@ export async function loadSheetData(plantIds: string[]): Promise<{ data: SheetDa
 
   const [taskRes, obsRes, crossRes] = await Promise.all([
     selectIn("field_intervention_tasks", "id,intervention_id,planting_id,done,done_date,result,notes,weather_daily_id", "planting_id", plantIds),
-    selectIn("field_observations", "id,planting_id,observation_date,disease_pressure,pests,treatment_applied,remarque,weather_daily_id", "planting_id", plantIds),
+    selectIn("field_observations", "id,planting_id,observation_date,disease_pressure,pests,climate_behavior,treatment_applied,treatment_reaction,remarque,weather_daily_id", "planting_id", plantIds),
     selectIn("field_planting_crossings", "planting_id,cross_id,cross_code,role,partner_name,pollination_date,status,fruit_count,seed_count", "planting_id", plantIds),
   ])
   const failure = taskRes.error ?? obsRes.error
@@ -77,7 +77,7 @@ export async function loadSheetData(plantIds: string[]): Promise<{ data: SheetDa
   const interventionById = new Map(interventionRes.data.map((row) => [row.id as string, row]))
 
   const programIds = Array.from(new Set(interventionRes.data.map((row) => row.program_id as string)))
-  const programRes = await selectIn("field_programs", "id,program_type,product_name,treatment_codes,fertilizer_code,planting_id,template_step_id", "id", programIds)
+  const programRes = await selectIn("field_programs", "id,program_type,product_name,treatment_codes,fertilizer_code,planting_id,template_step_id,notes", "id", programIds)
   if (programRes.error) return { data: null, error: humanError(programRes.error) }
   const programById = new Map(programRes.data.map((row) => [row.id as string, row]))
 
@@ -109,6 +109,7 @@ export async function loadSheetData(plantIds: string[]): Promise<{ data: SheetDa
       product_name: (program.product_name as string) ?? "",
       treatment_codes: (program.treatment_codes as string[] | null) ?? null,
       fertilizer_code: (program.fertilizer_code as string | null) ?? null,
+      program_notes: (program.notes as string | null) ?? null,
       program_planting_id: (program.planting_id as string | null) ?? null,
       template_step_id: (program.template_step_id as string | null) ?? null,
       weather: row.weather_daily_id ? weatherById.get(row.weather_daily_id as string) ?? null : null,
@@ -122,6 +123,8 @@ export async function loadSheetData(plantIds: string[]): Promise<{ data: SheetDa
     disease_pressure: (row.disease_pressure as string[] | null) ?? null,
     pests: (row.pests as string[] | null) ?? null,
     treatment_applied: (row.treatment_applied as string[] | null) ?? null,
+    climate_behavior: (row.climate_behavior as string[] | null) ?? null,
+    treatment_reaction: (row.treatment_reaction as string[] | null) ?? null,
     remarque: (row.remarque as string | null) ?? null,
     weather: row.weather_daily_id ? weatherById.get(row.weather_daily_id as string) ?? null : null,
   }))

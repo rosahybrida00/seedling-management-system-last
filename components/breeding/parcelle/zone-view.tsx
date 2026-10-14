@@ -20,17 +20,19 @@ import type {
   FieldPlanting, FieldProgram, FieldIntervention, FieldObservation, SeedLot, CrossParents,
 } from "@/app/parcelle/types"
 
-export function ZoneView({ zone, plantings, tables, seedLots = [], seedLotError = null, crossMap = new Map<string, CrossParents>(), plantingLabel, interventionsByProgram, observationsByPlanting, zonePrograms, onBack, onOpenPlant, onRefresh }: {
+export function ZoneView({ initialTab = "varietes", zone, plantings, tables, seedLots = [], seedLotError = null, crossMap = new Map<string, CrossParents>(), plantingLabel, interventionsByProgram, observationsByPlanting, zonePrograms, onBack, onOpenPlant, onRefresh }: {
   zone: Zone; plantings: FieldPlanting[]; greenhouses: Greenhouse[]; tables: GreenhouseTable[]; parcelles: Parcelle[]
   seedLots?: SeedLot[]; seedLotError?: string | null; crossMap?: Map<string, CrossParents>
   plantingLabel: (p: FieldPlanting) => string
   programsByPlanting: Map<string, FieldProgram[]>; interventionsByProgram: Map<string, FieldIntervention[]>
   observationsByPlanting: Map<string, FieldObservation[]>
   zonePrograms: FieldProgram[]
+  /** Onglet affiché à l'ouverture (lien direct depuis une notification). */
+  initialTab?: "varietes" | "graines" | "programme"
   /** « variety » : ouvre la fiche de toute la variété ; « plant » : celle d'un seul plant. */
   onBack: () => void; onOpenPlant: (id: string, scope?: "plant" | "variety") => void; onRefresh: () => void
 }) {
-  const [tab, setTab] = useState<"varietes" | "graines" | "programme">("varietes")
+  const [tab, setTab] = useState<"varietes" | "graines" | "programme">(initialTab)
   const [openVarieties, setOpenVarieties] = useState<Set<string>>(new Set())
   const [creating, setCreating] = useState(false)
   const [query, setQuery] = useState("")

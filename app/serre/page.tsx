@@ -18,6 +18,7 @@ import {
 import type { Seedling } from "@/lib/domain/supabase-types"
 import { ZoneWorkspace } from "@/components/breeding/parcelle/zone-workspace"
 import { PlaceInZoneDialog, type PlacementResult } from "@/components/breeding/parcelle/place-in-zone-dialog"
+import { NAVIGATE_EVENT } from "@/lib/navigation"
 
 // ---------------------------------------------------------------------------
 // Un semis (seedling) porte désormais directement `cross_id`, `fruit_code`,
@@ -89,6 +90,13 @@ function legacyStatusToEvaluation(status: Seedling["status"]): string {
 
 export default function SerrePage() {
   const [activeView, setActiveView] = useState<"zones" | "catalogue">("zones")
+
+  // Une notification ouvre une zone : on revient sur l'onglet des serres et parcelles.
+  useEffect(() => {
+    function onNavigate() { setActiveView("zones") }
+    window.addEventListener(NAVIGATE_EVENT, onNavigate)
+    return () => window.removeEventListener(NAVIGATE_EVENT, onNavigate)
+  }, [])
 
   return (
     <AppShell>

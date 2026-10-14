@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation"
 import { Flower2, Sprout, CloudSun, ChartBar as BarChart3, User, Settings, LogOut, Menu, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { WeatherBanner } from "@/components/weather/weather-banner"
+import { NotificationBell } from "@/components/notifications/notification-bell"
 import { useAuth } from "@/components/auth/auth-provider"
 import { useLanguage } from "@/lib/i18n/language-provider"
 import { cn } from "@/lib/utils"
@@ -61,6 +62,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
             {/* Profil / Paramètres : toujours en haut à droite, distincts de la nav principale */}
             <div className="ml-2 flex items-center gap-1 border-l border-border pl-2">
+              {user ? <NotificationBell /> : null}
               <div className="hidden items-center gap-1 md:flex">
                 <Link
                   href="/profil"

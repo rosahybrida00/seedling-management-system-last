@@ -9,12 +9,9 @@ import { useState, useEffect } from "react"
 import { Plus, CalendarClock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, Badge, Field, Input, EmptyState, Textarea } from "@/components/breeding/ui"
-import { formatDate } from "@/components/breeding/format"
 import { supabase } from "@/lib/supabase-client"
-import {
-  DISEASE_PRESSURE_LABELS, PEST_LABELS, CLIMATE_BEHAVIOR_LABELS,
-  FIELD_TREATMENT_LABELS, TREATMENT_REACTION_LABELS,
-} from "@/lib/domain/fieldLabels"
+import { describeObservation } from "@/lib/services/narrative"
+import { DISEASE_PRESSURE_LABELS, PEST_LABELS, CLIMATE_BEHAVIOR_LABELS } from "@/lib/domain/fieldLabels"
 import { getWeatherForDate, type DailyWeather } from "@/lib/services/weatherService"
 import type { FieldObservation } from "@/app/parcelle/types"
 
@@ -135,19 +132,13 @@ export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId,
       ) : (
         <div className="grid gap-2">
           {observations.map((o) => (
-            <Card key={o.id} className="p-3 text-xs">
-              <p className="font-medium text-foreground">{formatDate(o.observation_date)}{o.intervention_date ? ` · intervention le ${formatDate(o.intervention_date)}` : ""}</p>
-              <div className="mt-1 flex flex-wrap gap-1">
-                {o.disease_pressure.map((k) => <Badge key={k} tone="danger">{DISEASE_PRESSURE_LABELS[k] ?? k}</Badge>)}
-                {o.pests.map((k) => <Badge key={k} tone="danger">{PEST_LABELS[k] ?? k}</Badge>)}
-                {o.climate_behavior.map((k) => <Badge key={k} tone="warning">{CLIMATE_BEHAVIOR_LABELS[k] ?? k}</Badge>)}
-                {o.treatment_applied.map((k) => <Badge key={k} tone="primary">{FIELD_TREATMENT_LABELS[k] ?? k}</Badge>)}
-                {o.treatment_reaction.map((k) => <Badge key={k} tone="neutral">{TREATMENT_REACTION_LABELS[k] ?? k}</Badge>)}
-                {o.weather_daily?.temperature != null ? <Badge tone="neutral">{Math.round(o.weather_daily.temperature)}°C</Badge> : null}
-                {o.weather_daily?.humidity != null ? <Badge tone="neutral">{Math.round(o.weather_daily.humidity)}% hum.</Badge> : null}
-                {o.weather_daily?.uv_index != null ? <Badge tone="neutral">UV {Math.round(o.weather_daily.uv_index)}</Badge> : null}
-              </div>
-              {o.remarque ? <p className="mt-1 italic text-muted-foreground">{o.remarque}</p> : null}
+            <Card key={o.id} className="p-3">
+              <p className="text-sm leading-snug text-foreground">
+                {describeObservation(
+                  { date: o.observation_date, diseases: o.disease_pressure, pests: o.pests, climate: o.climate_behavior, remark: o.remarque, treatmentApplied: o.treatment_applied, treatmentReaction: o.treatment_reaction, interventionDate: o.intervention_date, weather: o.weather_daily },
+                  new Date().toISOString().slice(0, 10),
+                )}
+              </p>
             </Card>
           ))}
         </div>

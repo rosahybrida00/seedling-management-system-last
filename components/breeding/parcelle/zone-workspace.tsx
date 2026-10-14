@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, useRef } from "react"
 import { Sprout, MapPin, Warehouse, Settings, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { supabase } from "@/lib/supabase-client"
@@ -12,6 +12,7 @@ import { PlantView } from "@/components/breeding/parcelle/plant-view"
 import { PlantSheet } from "@/components/breeding/parcelle/plant-sheet"
 import { tasksAvailable } from "@/lib/services/plantSheetService"
 import { withOriginDates } from "@/lib/services/seedLotRules"
+import { NAVIGATE_EVENT, emitDataChanged, parseZoneNav, type ZoneNav, type ZoneTab } from "@/lib/navigation"
 import { ManageView } from "@/components/breeding/parcelle/manage-view"
 import { ParentsToPlace } from "@/components/breeding/parcelle/parents-to-place"
 import type {
@@ -70,6 +71,9 @@ export function ZoneWorkspace() {
   const [plantingId, setPlantingId] = useState<string | null>(null)
   // Ouverture depuis la carte d'une variété : fiche de toute la variété ; depuis un numéro : fiche d'un plant.
   const [plantScope, setPlantScope] = useState<"plant" | "variety">("plant")
+  // Lien direct (notification) : zone, onglet et plant à ouvrir une fois les données chargées.
+  const [pendingNav, setPendingNav] = useState<ZoneNav | null>(null)
+  const [zoneTab, setZoneTab] = useState<ZoneTab>("varietes")
   const [flashOpen, setFlashOpen] = useState(false)
   // Fiche unifiée (frise) disponible seulement si la migration 033 est appliquée.
   const [tasksReady, setTasksReady] = useState(false)
@@ -84,9 +88,25 @@ export function ZoneWorkspace() {
 
   useEffect(() => { fetchData() }, [])
   useEffect(() => { tasksAvailable().then(setTasksReady) }, [])
+  useEffect(() => {
+    // Au chargement : un lien /serre?zone=… ; ensuite : l'événement émis par la cloche.
+    const fromUrl = parseZoneNav(window.location.search)
+    if (fromUrl) setPendingNav(fromUrl)
+    function onNavigate(event: Event) {
+      const nav = (event as CustomEvent<ZoneNav>).detail
+      if (nav?.zone) setPendingNav(nav)
+    }
+    window.addEventListener(NAVIGATE_EVENT, onNavigate)
+    return () => window.removeEventListener(NAVIGATE_EVENT, onNavigate)
+  }, [])
+
+  // L'écran de chargement ne s'affiche qu'au premier chargement. Aux rechargements qui suivent
+  // (après un soin validé, une observation…), la page reste en place : sinon la zone repartait
+  // sur son premier onglet et la fiche ouverte se refermait.
+  const hasLoaded = useRef(false)
 
   async function fetchData() {
-    setLoading(true)
+    if (!hasLoaded.current) setLoading(true)
     const [gh, gt, pc, fp, ob, pr, iv, vr, photoRows, sl, cr, seedLotsResult, sensorRows, settingsRow] = await Promise.all([
       supabase.from("greenhouses").select("id,name").order("name"),
       supabase.from("greenhouse_tables").select("id,greenhouse_id,name").order("name"),
@@ -184,6 +204,8 @@ export function ZoneWorkspace() {
       })))
     }
     setLoading(false)
+    hasLoaded.current = true
+    emitDataChanged()
   }
 
   const programsByPlanting = useMemo(() => {
@@ -278,6 +300,21 @@ export function ZoneWorkspace() {
   const visibleZones = watchlistOnly ? zones.filter(({ zone }) => zoneStatus(zone) !== "vert") : zones
   const currentZone = zoneKey ? zones.find((item) => item.key === zoneKey)?.zone ?? null : null
   const currentPlanting = plantingId ? plantings.find((planting) => planting.id === plantingId) ?? null : null
+
+  // Applique un lien direct (notification) : zone, onglet, et plant si demandé.
+  useEffect(() => {
+    if (!pendingNav || loading) return
+    const target = zones.find((item) => item.key === pendingNav.zone)
+    if (target) {
+      setZoneKey(target.key)
+      setZoneTab(pendingNav.tab ?? "varietes")
+      const plant = pendingNav.plant ? plantings.find((planting) => planting.id === pendingNav.plant) : null
+      if (plant) { setPlantingId(plant.id); setPlantScope("plant"); setView("plant") } else { setPlantingId(null); setView("zone") }
+    }
+    // Zone introuvable (supprimée) : on ne fait rien de plus, sans erreur.
+    setPendingNav(null)
+    try { window.history.replaceState(null, "", "/serre") } catch { /* sans importance */ }
+  }, [pendingNav, loading, zones, plantings])
   const currentZonePrograms = useMemo(() => {
     if (!currentZone) return []
     return programs.filter((program) =>
@@ -336,6 +373,8 @@ export function ZoneWorkspace() {
 
       {view === "zone" && currentZone ? (
         <ZoneView
+          key={`${zoneKey}:${zoneTab}`}
+          initialTab={zoneTab}
           zone={currentZone} plantings={plantingsOfZone(currentZone)} greenhouses={greenhouses} tables={tables} parcelles={parcelles}
           seedLots={seedLots} seedLotError={seedLotError} crossMap={crossMap}
           plantingLabel={plantingLabel} programsByPlanting={programsByPlanting} interventionsByProgram={interventionsByProgram}

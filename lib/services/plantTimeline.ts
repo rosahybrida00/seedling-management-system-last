@@ -10,14 +10,8 @@
 // passé / aujourd'hui / à venir, et règles de validation des saisies.
 // ---------------------------------------------------------------------------
 
-import {
-  DISEASE_PRESSURE_LABELS,
-  FERTILIZER_LABELS,
-  FIELD_TREATMENT_LABELS,
-  PEST_LABELS,
-  PROGRAM_RESULT_LABELS,
-  PROGRAM_TYPE_LABELS,
-} from "@/lib/domain/fieldLabels"
+import { FERTILIZER_LABELS, FIELD_TREATMENT_LABELS, PROGRAM_RESULT_LABELS } from "@/lib/domain/fieldLabels"
+import { describeCrossing, describeObservation, describeTask } from "@/lib/services/narrative"
 
 export type TimelineKind = "tache" | "observation" | "croisement"
 export type Bucket = "sans_date" | "en_retard" | "aujourdhui" | "cette_semaine" | "plus_tard" | "passe"
@@ -32,6 +26,10 @@ export interface PlantRef {
   id: string
   label: string
   plantedAt: string
+  /** Numéro simple affiché dans les phrases : « n°3 » ou « Lot 2 · n°3 ». */
+  short?: string
+  /** Emplacement affiché dans les phrases : « Serre 1 · Table 2 ». */
+  place?: string
 }
 
 // ----------------------------- Données brutes -------------------------------
@@ -56,6 +54,8 @@ export interface RawTaskRow {
   product_name: string
   treatment_codes: string[] | null
   fertilizer_code: string | null
+  /** Notes du programme (un plan de traitement y inscrit ses cibles). */
+  program_notes?: string | null
   /** Renseigné si le programme est individuel (un seul plant), null pour un programme de zone. */
   program_planting_id: string | null
   template_step_id: string | null
@@ -69,6 +69,8 @@ export interface RawObservation {
   disease_pressure: string[] | null
   pests: string[] | null
   treatment_applied: string[] | null
+  climate_behavior?: string[] | null
+  treatment_reaction?: string[] | null
   remarque: string | null
   weather: RawWeather | null
 }
@@ -130,6 +132,10 @@ export interface BuildInput {
   tasks: RawTaskRow[]
   observations: RawObservation[]
   crossings: RawCrossing[]
+  /** Date du jour (AAAA-MM-JJ) pour les phrases relatives : « demain », « en retard de 3 jours ». */
+  today?: string
+  /** Vrai quand plusieurs plants sont affichés : les phrases disent de quel plant il s'agit. */
+  showPlants?: boolean
 }
 
 // ------------------------------- Utilitaires --------------------------------
@@ -169,6 +175,7 @@ function productLabel(row: Pick<RawTaskRow, "program_type" | "product_name" | "t
 // --------------------------- Construction de la frise -----------------------
 
 export function buildTimeline(input: BuildInput): TimelineItem[] {
+  const today = input.today ?? todayIso()
   const plantById = new Map(input.plants.map((plant) => [plant.id, plant]))
   const items: TimelineItem[] = []
 
@@ -199,23 +206,32 @@ export function buildTimeline(input: BuildInput): TimelineItem[] {
       })
       .sort((a, b) => a.plantLabel.localeCompare(b.plantLabel, "fr", { numeric: true }))
     const allDone = members.every((member) => member.done)
-    const doneCount = members.filter((member) => member.done).length
     const lastDone = members.reduce<string | null>((latest, m) => (m.doneDate && (!latest || m.doneDate > latest) ? m.doneDate : latest), null)
-    const badges: TimelineBadge[] = [
-      { label: PROGRAM_TYPE_LABELS[first.program_type] ?? first.program_type, tone: first.program_type === "curatif" ? "danger" : first.program_type === "fertilisation" ? "accent" : "primary" },
-      { label: first.program_planting_id ? "Individuel" : "Zone", tone: "neutral" },
-    ]
-    if (members.length > 1) badges.push({ label: `${doneCount}/${members.length} plants`, tone: allDone ? "success" : doneCount > 0 ? "warning" : "neutral" })
-    else if (allDone) badges.push({ label: "Fait", tone: "success" })
-    const resultLabels = Array.from(new Set(members.filter((m) => m.done && m.result).map((m) => PROGRAM_RESULT_LABELS[m.result as string] ?? (m.result as string))))
-    for (const label of resultLabels) badges.push({ label, tone: label === PROGRAM_RESULT_LABELS.echec ? "danger" : label === PROGRAM_RESULT_LABELS.amelioration ? "success" : "neutral" })
+    // Un seul repère d'état (le reste est dit en toutes lettres dans la phrase).
+    const badges: TimelineBadge[] = allDone
+      ? [{ label: "Fait", tone: "success" }]
+      : first.due_date && first.due_date < today
+        ? [{ label: "En retard", tone: "danger" }]
+        : first.due_date === today
+          ? [{ label: "Aujourd'hui", tone: "warning" }]
+          : []
 
     items.push({
       key: `tache:${interventionId}`,
       kind: "tache",
       date: allDone ? lastDone : first.due_date,
       title: productLabel(first),
-      detail: null,
+      detail: describeTask(
+        {
+          programType: first.program_type,
+          product: productLabel(first),
+          notes: first.program_notes,
+          dueDate: first.due_date,
+          scope: first.program_planting_id ? "individuel" : "zone",
+          members: members.map((member) => ({ label: plantById.get(member.plantingId)?.short ?? member.plantLabel, done: member.done, doneDate: member.doneDate, result: member.result, weather: member.weather })),
+        },
+        today,
+      ),
       badges,
       plantLabels: members.map((member) => member.plantLabel),
       task: {
@@ -233,22 +249,22 @@ export function buildTimeline(input: BuildInput): TimelineItem[] {
     })
   }
 
-  // Observations : une ligne par observation (par plant).
+  // Observations : une ligne par observation (par plant), racontée en une phrase.
   for (const obs of input.observations) {
     const plant = plantById.get(obs.planting_id)
     if (!plant) continue
-    const badges: TimelineBadge[] = [
-      ...labelList(obs.disease_pressure, DISEASE_PRESSURE_LABELS).map((label) => ({ label, tone: "danger" as const })),
-      ...labelList(obs.pests, PEST_LABELS).map((label) => ({ label, tone: "warning" as const })),
-      ...labelList(obs.treatment_applied, FIELD_TREATMENT_LABELS).map((label) => ({ label, tone: "primary" as const })),
-    ]
+    const where = input.showPlants ? `le plant ${plant.short ?? plant.label}${plant.place ? ` (${plant.place})` : ""}` : undefined
     items.push({
       key: `observation:${obs.id}`,
       kind: "observation",
       date: datePart(obs.observation_date),
       title: "Observation",
-      detail: obs.remarque?.trim() || null,
-      badges,
+      detail: describeObservation(
+        { date: obs.observation_date, diseases: obs.disease_pressure, pests: obs.pests, climate: obs.climate_behavior, remark: obs.remarque, treatmentApplied: obs.treatment_applied, treatmentReaction: obs.treatment_reaction, weather: obs.weather },
+        today,
+        where,
+      ),
+      badges: [],
       plantLabels: [plant.label],
     })
   }
@@ -260,17 +276,13 @@ export function buildTimeline(input: BuildInput): TimelineItem[] {
     const key = `${crossing.cross_id}:${crossing.role}`
     if (seenCrossings.has(key)) continue
     seenCrossings.add(key)
-    const counts = [
-      crossing.fruit_count ? `${crossing.fruit_count} fruit${crossing.fruit_count > 1 ? "s" : ""}` : null,
-      crossing.seed_count ? `${crossing.seed_count} graine${crossing.seed_count > 1 ? "s" : ""}` : null,
-    ].filter(Boolean).join(" · ")
     items.push({
       key: `croisement:${key}`,
       kind: "croisement",
       date: datePart(crossing.pollination_date),
-      title: `${crossing.role === "mere" ? "Mère" : "Père"} × ${crossing.partner_name ?? "parent inconnu"}`,
-      detail: [crossing.cross_code, counts].filter(Boolean).join(" · ") || null,
-      badges: crossing.status ? [{ label: crossing.status, tone: crossing.status === "Avorté" ? "danger" : crossing.status === "Récolté" ? "success" : "primary" }] : [],
+      title: `Croisement ${crossing.cross_code ?? ""}`.trim(),
+      detail: describeCrossing({ role: crossing.role, partner: crossing.partner_name, code: crossing.cross_code, pollinationDate: crossing.pollination_date, fruits: crossing.fruit_count, seeds: crossing.seed_count, status: crossing.status }, today),
+      badges: [],
       plantLabels: [],
     })
   }

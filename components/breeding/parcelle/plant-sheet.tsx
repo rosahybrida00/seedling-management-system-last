@@ -108,6 +108,8 @@ export function PlantSheet({ initialScope = "plant", planting, label, details, s
       id: item.id,
       plantedAt: item.planted_at,
       label: `${displayLabels.get(item.id) ?? "plant"} · ${locationName(item.greenhouse_table_id, item.parcelle_id)}`,
+      short: displayLabels.get(item.id) ?? "plant",
+      place: locationName(item.greenhouse_table_id, item.parcelle_id),
     })),
     [scopedPlantings, locationName, displayLabels],
   )
@@ -127,8 +129,8 @@ export function PlantSheet({ initialScope = "plant", planting, label, details, s
   }, [scopedPlantings, reloadKey])
 
   const items = useMemo(
-    () => (data ? buildTimeline({ plants: plantRefs, tasks: data.tasks, observations: data.observations, crossings: data.crossings }) : []),
-    [data, plantRefs],
+    () => (data ? buildTimeline({ plants: plantRefs, tasks: data.tasks, observations: data.observations, crossings: data.crossings, today, showPlants: scope === "variety" }) : []),
+    [data, plantRefs, today, scope],
   )
   const sections = useMemo(() => groupTimeline(items, today), [items, today])
   const summary = useMemo(() => summarize(items, today), [items, today])
@@ -423,7 +425,7 @@ function TimelineBlock({ section, expanded, onToggle, renderBody }: {
         {section.items.map((item) => {
           const Icon = KIND_ICON[item.kind]
           const open = expanded === item.key
-          const expandable = item.kind === "tache" || item.plantLabels.length > 1 || Boolean(item.detail)
+          const expandable = item.kind === "tache" || item.plantLabels.length > 1
           return (
             <li key={item.key}>
               <Card className={open ? "border-primary/40" : ""}>
@@ -437,7 +439,7 @@ function TimelineBlock({ section, expanded, onToggle, renderBody }: {
                   <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-foreground">{item.title}</span>
-                    {item.detail && !open ? <span className="block truncate text-xs text-muted-foreground">{item.detail}</span> : null}
+                    {item.detail ? <span className="mt-0.5 block text-sm leading-snug text-foreground">{item.detail}</span> : null}
                     {item.badges.length > 0 ? (
                       <span className="mt-1 flex flex-wrap gap-1">
                         {item.badges.map((badge, index) => <Badge key={`${badge.label}-${index}`} tone={badge.tone}>{badge.label}</Badge>)}
@@ -467,12 +469,7 @@ function ItemBody({ item, scope, plantById, today, onChanged }: {
   if (item.kind === "tache" && item.task) {
     return <TaskPanel item={item} scope={scope} plantById={plantById} today={today} onChanged={onChanged} />
   }
-  return (
-    <div className="flex flex-col gap-1 text-sm">
-      {item.detail ? <p className="text-foreground">{item.detail}</p> : null}
-      {item.plantLabels.length > 1 ? <p className="text-xs text-muted-foreground">{item.plantLabels.join(" · ")}</p> : null}
-    </div>
-  )
+  return item.plantLabels.length > 1 ? <p className="text-xs text-muted-foreground">{item.plantLabels.join(" · ")}</p> : null
 }
 
 function TaskPanel({ item, scope, plantById, today, onChanged }: {
