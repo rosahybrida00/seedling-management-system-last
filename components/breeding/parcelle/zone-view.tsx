@@ -14,6 +14,7 @@ import { ZoneProgramPanel } from "@/components/breeding/parcelle/zone-program-pa
 import { SeedLotPicker } from "@/components/breeding/serre/seed-lot-picker"
 import { groupLotsForZone } from "@/lib/services/seedLotRules"
 import { daysBetween, todayIso } from "@/lib/services/plantTimeline"
+import { groupPlantings } from "@/lib/services/plantGrouping"
 import type {
   Zone, Greenhouse, GreenhouseTable, Parcelle, VarietyOption,
   FieldPlanting, FieldProgram, FieldIntervention, FieldObservation, SeedLot, CrossParents,
@@ -26,9 +27,11 @@ export function ZoneView({ zone, plantings, tables, seedLots = [], seedLotError 
   programsByPlanting: Map<string, FieldProgram[]>; interventionsByProgram: Map<string, FieldIntervention[]>
   observationsByPlanting: Map<string, FieldObservation[]>
   zonePrograms: FieldProgram[]
-  onBack: () => void; onOpenPlant: (id: string) => void; onRefresh: () => void
+  /** « variety » : ouvre la fiche de toute la variété ; « plant » : celle d'un seul plant. */
+  onBack: () => void; onOpenPlant: (id: string, scope?: "plant" | "variety") => void; onRefresh: () => void
 }) {
   const [tab, setTab] = useState<"varietes" | "graines" | "programme">("varietes")
+  const [openVarieties, setOpenVarieties] = useState<Set<string>>(new Set())
   const [creating, setCreating] = useState(false)
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<VarietyOption | null>(null)
@@ -47,6 +50,7 @@ export function ZoneView({ zone, plantings, tables, seedLots = [], seedLotError 
   const lotGroups = groupLotsForZone(seedLots, { kind: zone.kind, id: zone.kind === "serre" ? zone.greenhouse.id : zone.parcelle.id }, new Set(zoneTables.map((t) => t.id)))
   const lotCount = lotGroups.toSow.length + lotGroups.sownHere.length
   const today = todayIso()
+  const varietyGroups = groupPlantings(plantings, plantingLabel)
   const openRows = zonePrograms.flatMap((program) => (interventionsByProgram.get(program.id) ?? []).filter((intervention) => !intervention.done))
   const overdueCount = openRows.filter((intervention) => intervention.due_date != null && daysBetween(today, intervention.due_date) < 0).length
 
@@ -221,25 +225,56 @@ export function ZoneView({ zone, plantings, tables, seedLots = [], seedLotError 
       {plantings.length === 0 ? (
         <EmptyState icon={<Sprout className="size-8" />} title="Aucun plant" description="Ajoutez une variété du Catalogue ou un Semis à cette zone." />
       ) : (
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {plantings.map((p) => {
-            const lastObs = (observationsByPlanting.get(p.id) ?? [])[0]
-            const alert = lastObs && (lastObs.disease_pressure.length > 0 || lastObs.pests.length > 0)
+        <div className="flex flex-col gap-2">
+          {varietyGroups.map((group) => {
+            const open = openVarieties.has(group.key)
+            const alertIds = new Set(group.lots.flatMap((lot) => lot.plants).filter((plant) => {
+              const last = (observationsByPlanting.get(plant.planting.id) ?? [])[0]
+              return last != null && (last.disease_pressure.length > 0 || last.pests.length > 0)
+            }).map((plant) => plant.planting.id))
+            const tableNames = group.tableIds.map((id) => tables.find((table) => table.id === id)?.name).filter(Boolean)
             return (
-              <button key={p.id} onClick={() => onOpenPlant(p.id)} className="flex flex-col gap-1 rounded-lg border border-border bg-card p-3 text-left hover:border-primary/40 hover:bg-muted/30">
-                <div className="flex items-center gap-2">
-                  {alert ? <span className="size-2 rounded-full bg-destructive" /> : null}
-                  <Sprout className="size-4 text-primary" />
-                  <span className="text-sm font-medium">{plantingLabel(p)}</span>
-                  {p.individual_number ? <Badge tone="neutral">Lot {p.group_id?.slice(0, 6).toUpperCase()} · Individu {p.individual_number}</Badge> : null}
-                  {p.greenhouse_table_id ? <Badge tone="neutral">{tables.find((table) => table.id === p.greenhouse_table_id)?.name ?? "Table"}</Badge> : null}
-                  {p.container_type ? <Badge tone="neutral">{p.container_type}</Badge> : p.location_type ? <Badge tone="neutral">{p.location_type === "pot" ? "Pot" : "Pleine terre"}</Badge> : null}
+              <Card key={group.key} className={open ? "border-primary/40" : ""}>
+                <div className="flex items-center gap-2 p-3">
+                  <button type="button" onClick={() => onOpenPlant(group.firstPlantingId, "variety")} className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left hover:text-primary" aria-label={`Ouvrir la fiche de ${group.name}`}>
+                    {alertIds.size > 0 ? <span className="size-2 shrink-0 rounded-full bg-destructive" aria-label="Problème sanitaire observé" /> : null}
+                    <Sprout className="size-4 shrink-0 text-primary" />
+                    <span className="truncate text-sm font-medium text-foreground">{group.name}</span>
+                  </button>
+                  <div className="hidden shrink-0 flex-wrap items-center gap-1 sm:flex">
+                    <Badge tone="primary">{group.plantCount} plant{group.plantCount > 1 ? "s" : ""}</Badge>
+                    {group.lots.length > 1 ? <Badge tone="neutral">{group.lots.length} lots</Badge> : null}
+                    {group.cultures.map((culture) => <Badge key={culture} tone="neutral">{culture === "pot" ? "Pot" : "Pleine terre"}</Badge>)}
+                    {tableNames.length > 0 ? <Badge tone="neutral">{tableNames.join(", ")}</Badge> : null}
+                  </div>
+                  <Button size="sm" variant="ghost" aria-expanded={open} aria-label={`${open ? "Masquer" : "Voir"} les plants de ${group.name}`} onClick={() => setOpenVarieties((current) => { const next = new Set(current); if (next.has(group.key)) next.delete(group.key); else next.add(group.key); return next })}>
+                    {open ? "Masquer" : `Plants (${group.plantCount})`}
+                  </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Planté le {formatDate(p.planted_at)}{p.plant_count ? ` · ${p.plant_count} ${p.location_type === "pot" ? "pot(s)" : "plant(s)"}` : ""}
-                  {lastObs ? ` · observé le ${formatDate(lastObs.observation_date)}` : ""}
-                </p>
-              </button>
+                {open ? (
+                  <div className="flex flex-col gap-3 border-t border-border p-3">
+                    {group.lots.map((lot) => (
+                      <div key={lot.key} className="flex flex-col gap-1.5">
+                        {group.lots.length > 1 ? <p className="text-xs font-medium text-muted-foreground">Lot {lot.number} · planté le {formatDate(lot.plantedAt)} · {lot.plants.length} plant{lot.plants.length > 1 ? "s" : ""}</p> : <p className="text-xs text-muted-foreground">Planté le {formatDate(lot.plantedAt)}</p>}
+                        <div className="flex flex-wrap gap-1.5" role="group" aria-label={group.lots.length > 1 ? `Plants du lot ${lot.number}` : "Plants"}>
+                          {lot.plants.map((plant) => (
+                            <button
+                              key={plant.planting.id}
+                              type="button"
+                              onClick={() => onOpenPlant(plant.planting.id, "plant")}
+                              aria-label={`Ouvrir la fiche ${group.lots.length > 1 ? `du lot ${lot.number}, ` : ""}plant ${plant.number}`}
+                              className="relative flex size-9 items-center justify-center rounded-md border border-border-strong bg-background text-sm font-medium text-foreground hover:bg-muted"
+                            >
+                              {plant.number}
+                              {alertIds.has(plant.planting.id) ? <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-destructive" aria-label="Problème sanitaire observé" /> : null}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </Card>
             )
           })}
         </div>

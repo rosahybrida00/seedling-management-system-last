@@ -1,9 +1,12 @@
 "use client"
 
-// Historique sanitaire & climatique (grille quotidienne à cocher).
+// Observation pure : date, météo du jour, symptômes (maladies, ravageurs),
+// comportement face au climat, remarque. Les SOINS (produit appliqué, réaction)
+// ne se saisissent plus ici : ils relèvent des interventions, avec leur résultat.
+// Les anciennes observations gardent l'affichage de leurs traitements.
 
 import { useState, useEffect } from "react"
-import { Plus, ArrowLeft, CalendarClock } from "lucide-react"
+import { Plus, CalendarClock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, Badge, Field, Input, EmptyState, Textarea } from "@/components/breeding/ui"
 import { formatDate } from "@/components/breeding/format"
@@ -15,7 +18,14 @@ import {
 import { getWeatherForDate, type DailyWeather } from "@/lib/services/weatherService"
 import type { FieldObservation } from "@/app/parcelle/types"
 
-export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId, observations, onRefresh, showList = true, startOpen = false }: {
+export interface SavedObservation {
+  id: string | null
+  date: string
+  diseases: string[]
+  pests: string[]
+}
+
+export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId, observations, onRefresh, showList = true, startOpen = false, onSaved, onCancel }: {
   plantingId: string
   greenhouseTableId: string | null
   parcelleId: string | null
@@ -24,16 +34,18 @@ export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId,
   /** Faux : seul le formulaire est affiché (la liste vit ailleurs, ex. dans la frise du plant). */
   showList?: boolean
   startOpen?: boolean
+  /** Appelé après l'enregistrement, avec les problèmes cochés : sert à proposer un plan de traitement. */
+  onSaved?: (observation: SavedObservation) => void
+  onCancel?: () => void
 }) {
   const [creating, setCreating] = useState(startOpen)
   const [observationDate, setObservationDate] = useState(new Date().toISOString().split("T")[0])
-  const [interventionDate, setInterventionDate] = useState("")
   const [disease, setDisease] = useState<string[]>([])
   const [pests, setPests] = useState<string[]>([])
   const [climate, setClimate] = useState<string[]>([])
-  const [treatment, setTreatment] = useState<string[]>([])
-  const [reaction, setReaction] = useState<string[]>([])
   const [remarque, setRemarque] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
   const [weather, setWeather] = useState<DailyWeather | null>(null)
   const [weatherDailyId, setWeatherDailyId] = useState<string | null>(null)
 
@@ -45,7 +57,8 @@ export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId,
       if (cancelled) return
       setWeather(dailyWeather)
       if (!dailyWeather) { setWeatherDailyId(null); return }
-      const { data } = await supabase.from("weather_daily").select("id").eq("date", observationDate).maybeSingle()
+      const { data: auth } = await supabase.auth.getUser()
+      const { data } = await supabase.from("weather_daily").select("id").eq("user_id", auth.user?.id ?? "").eq("date", observationDate).maybeSingle()
       if (!cancelled) setWeatherDailyId(data?.id ?? null)
     }
     loadWeather()
@@ -57,15 +70,24 @@ export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId,
   }
 
   async function submit() {
-    const { error } = await supabase.from("field_observations").insert({
-      planting_id: plantingId, observation_date: observationDate, intervention_date: interventionDate || null,
-      disease_pressure: disease, pests, climate_behavior: climate, treatment_applied: treatment, treatment_reaction: reaction, remarque,
+    if (observationDate > new Date().toISOString().split("T")[0]) { setError("Une observation ne peut pas être datée dans le futur."); return }
+    setSaving(true)
+    setError(null)
+    const { data, error: insertError } = await supabase.from("field_observations").insert({
+      planting_id: plantingId, observation_date: observationDate,
+      disease_pressure: disease, pests, climate_behavior: climate,
+      // Observation pure : ni traitement ni réaction (ils se saisissent dans l'intervention).
+      treatment_applied: [], treatment_reaction: [], intervention_date: null,
+      remarque,
       weather_daily_id: weatherDailyId,
       greenhouse_table_id: greenhouseTableId,
       parcelle_id: parcelleId,
-    })
-    if (error) { alert(`Erreur : ${error.message}`); return }
-    setDisease([]); setPests([]); setClimate([]); setTreatment([]); setReaction([]); setRemarque(""); setInterventionDate(""); setCreating(false)
+    }).select("id").single()
+    setSaving(false)
+    if (insertError) { setError(insertError.code === "23514" ? insertError.message : `Enregistrement impossible : ${insertError.message}`); return }
+    const saved: SavedObservation = { id: (data?.id as string | undefined) ?? null, date: observationDate, diseases: disease, pests }
+    setDisease([]); setPests([]); setClimate([]); setRemarque(""); setCreating(false)
+    onSaved?.(saved)
     onRefresh()
   }
 
@@ -73,20 +95,17 @@ export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId,
     { title: "Maladie / Pression sanitaire", labels: DISEASE_PRESSURE_LABELS, value: disease, set: setDisease },
     { title: "Insectes / Ravageurs", labels: PEST_LABELS, value: pests, set: setPests },
     { title: "Comportement face au climat", labels: CLIMATE_BEHAVIOR_LABELS, value: climate, set: setClimate },
-    { title: "Type de traitement appliqué", labels: FIELD_TREATMENT_LABELS, value: treatment, set: setTreatment },
-    { title: "Réaction face au traitement", labels: TREATMENT_REACTION_LABELS, value: reaction, set: setReaction },
   ]
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex justify-end"><Button size="sm" onClick={() => setCreating((v) => !v)} className="gap-1.5"><Plus className="size-4" /> Nouvelle observation</Button></div>
+      {showList ? <div className="flex justify-end"><Button size="sm" onClick={() => setCreating((v) => !v)} className="gap-1.5"><Plus className="size-4" /> Nouvelle observation</Button></div> : null}
 
       {creating ? (
         <Card className="p-4">
-          <button onClick={() => setCreating(false)} className="mb-3 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" /> Retour</button>
+          <p className="mb-3 text-xs text-muted-foreground">Observation seule : symptômes, météo et date. Les soins se saisissent dans « Intervention », avec leur résultat.</p>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Date de l'observation"><Input type="date" max={new Date().toISOString().split("T")[0]} value={observationDate} onChange={(e) => setObservationDate(e.target.value)} /></Field>
-            <Field label="Date d'intervention"><Input type="date" value={interventionDate} onChange={(e) => setInterventionDate(e.target.value)} /></Field>
           </div>
           {weather ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -106,7 +125,8 @@ export function ObservationsSection({ plantingId, greenhouseTableId, parcelleId,
             </div>
           ))}
           <div className="mt-3"><Field label="Remarque"><Textarea value={remarque} onChange={(e) => setRemarque(e.target.value)} /></Field></div>
-          <div className="mt-4 flex justify-end gap-2"><Button variant="ghost" size="sm" onClick={() => setCreating(false)}>Annuler</Button><Button size="sm" onClick={submit}>Enregistrer</Button></div>
+          {error ? <p role="alert" className="mt-3 text-sm text-destructive">{error}</p> : null}
+          <div className="mt-4 flex justify-end gap-2"><Button variant="ghost" size="sm" onClick={() => { setCreating(false); onCancel?.() }} disabled={saving}>Annuler</Button><Button size="sm" onClick={submit} disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer"}</Button></div>
         </Card>
       ) : null}
 

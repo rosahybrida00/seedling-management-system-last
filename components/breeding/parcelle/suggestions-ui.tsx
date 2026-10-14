@@ -1,23 +1,27 @@
 "use client"
 
 // Éléments communs aux pages Serre/Parcelle et à la fiche d'un plant :
-//  - SuggestionCards : suggestions prêtes à l'emploi. Un clic sur la suggestion
-//    la valide (le programme est enregistré avec le produit déjà proposé) et la
-//    referme ; « Ignorer » l'écarte pour de bon.
+//  - SuggestionCards : suggestions prêtes à l'emploi. Un clic sur une suggestion
+//    simple la valide (le programme est enregistré avec le produit déjà proposé) et
+//    la referme. Un clic sur un plan de traitement (observation, météo) ouvre le
+//    pop-up du plan, à valider d'un clic. « Ignorer » l'écarte pour de bon.
 //  - ManualInterventionForm : intervenir sans passer par une suggestion.
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge, Card, Field, Input, Select, Textarea } from "@/components/breeding/ui"
 import { FERTILIZER_LABELS, FIELD_TREATMENT_LABELS, PROGRAM_RESULT_LABELS, PROGRAM_TYPE_LABELS } from "@/lib/domain/fieldLabels"
+import { CATEGORY_LABELS, CATEGORY_ORDER, categoryOf } from "@/lib/domain/treatmentMatrix"
 import { isIsoDate, newInterventionProblem, NEW_INTERVENTION_TYPES } from "@/lib/services/plantTimeline"
 import { suggestionProductLabel, type Suggestion } from "@/lib/services/suggestionEngine"
 
 export const MAX_VISIBLE_SUGGESTIONS = 3
 
-export function SuggestionCards({ suggestions, onAccept, onIgnore, busy = false }: {
+export function SuggestionCards({ suggestions, onAccept, onOpenPlan, onIgnore, busy = false }: {
   suggestions: Suggestion[]
   onAccept: (suggestion: Suggestion, chosen: string[]) => void
+  /** Ouvre le pop-up d'un plan de traitement (suggestions issues d'une observation ou de la météo). */
+  onOpenPlan: (suggestion: Suggestion) => void
   onIgnore: (suggestion: Suggestion) => void
   busy?: boolean
 }) {
@@ -37,10 +41,13 @@ export function SuggestionCards({ suggestions, onAccept, onIgnore, busy = false 
             ? Object.entries(FIELD_TREATMENT_LABELS)
             : suggestion.options.map((code) => [code, (suggestion.programType === "fertilisation" ? FERTILIZER_LABELS : FIELD_TREATMENT_LABELS)[code] ?? code] as const)
           const product = suggestionProductLabel({ programType: suggestion.programType, chosen, task: suggestion.task })
-          const canPick = suggestion.needsChoice || suggestion.options.length > 1
-          const unresolved = suggestion.programType !== "hygiene" && chosen.length === 0
+          const isPlan = suggestion.plan != null
+          const canPick = !isPlan && (suggestion.needsChoice || suggestion.options.length > 1)
+          const unresolved = !isPlan && suggestion.programType !== "hygiene" && chosen.length === 0
+          const sourceBadge = suggestion.source === "observation" ? { label: "Observation", tone: "danger" as const } : suggestion.source === "meteo" ? { label: "Météo", tone: "accent" as const } : { label: PROGRAM_TYPE_LABELS[suggestion.programType], tone: "primary" as const }
 
           function accept() {
+            if (isPlan) { onOpenPlan(suggestion); return }
             if (unresolved) { setMissing(suggestion.id); return }
             setMissing(null)
             onAccept(suggestion, chosen)
@@ -54,17 +61,22 @@ export function SuggestionCards({ suggestions, onAccept, onIgnore, busy = false 
                     type="button"
                     onClick={accept}
                     disabled={busy}
-                    aria-label={`Valider la suggestion : ${suggestion.title}${product ? ` (${product})` : ""}`}
+                    aria-label={isPlan ? `Voir le plan : ${suggestion.title}` : `Valider la suggestion : ${suggestion.title}${product ? ` (${product})` : ""}`}
                     className="min-w-0 flex-1 rounded-md p-2 text-left hover:bg-muted/40 disabled:opacity-60"
                   >
                     <span className="flex flex-wrap items-center gap-1.5">
                       <span className="text-sm font-medium text-foreground">{suggestion.title}</span>
-                      <Badge tone={suggestion.source === "observation" ? "danger" : "primary"}>{suggestion.source === "observation" ? "Observation" : PROGRAM_TYPE_LABELS[suggestion.programType]}</Badge>
+                      <Badge tone={sourceBadge.tone}>{sourceBadge.label}</Badge>
                       {suggestion.late ? <Badge tone="warning">En retard</Badge> : null}
                       {suggestion.optional ? <Badge tone="neutral">Si nécessaire</Badge> : null}
                     </span>
                     <span className="mt-1 block text-xs text-muted-foreground">{suggestion.reason}</span>
-                    {product ? <span className="mt-1.5 inline-flex rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{product}</span> : null}
+                    {isPlan ? (
+                      <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                        {suggestion.plan?.steps.map((step) => <span key={step.productCode} className="inline-flex rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{step.productLabel}</span>)}
+                        <span className="text-xs font-medium text-foreground underline">Voir le plan</span>
+                      </span>
+                    ) : product ? <span className="mt-1.5 inline-flex rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{product}</span> : null}
                     {missing === suggestion.id ? <span role="alert" className="mt-1 block text-xs text-destructive">Choisissez le produit à droite pour valider.</span> : null}
                   </button>
                   <div className="flex shrink-0 flex-col justify-center gap-1">
@@ -164,15 +176,24 @@ export function ManualInterventionForm({ title = "Intervenir", minDate, today, s
           </Select>
         </Field>
       ) : (
-        <fieldset className="flex flex-col gap-1">
+        <fieldset className="flex flex-col gap-2">
           <legend className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Traitement</legend>
-          <div className="flex flex-wrap gap-3 text-xs">
-            {Object.entries(FIELD_TREATMENT_LABELS).map(([key, text]) => (
-              <label key={key} className="flex items-center gap-1.5">
-                <input type="checkbox" checked={treatmentCodes.includes(key)} onChange={() => toggleTreatment(key)} /> {text}
-              </label>
-            ))}
-          </div>
+          {CATEGORY_ORDER.map((category) => {
+            const codes = Object.keys(FIELD_TREATMENT_LABELS).filter((code) => categoryOf(code) === category)
+            if (codes.length === 0) return null
+            return (
+              <div key={category} className="flex flex-col gap-1">
+                <p className="text-xs font-medium text-foreground">{CATEGORY_LABELS[category]}</p>
+                <div className="flex flex-wrap gap-3 text-xs">
+                  {codes.map((key) => (
+                    <label key={key} className="flex items-center gap-1.5">
+                      <input type="checkbox" checked={treatmentCodes.includes(key)} onChange={() => toggleTreatment(key)} /> {FIELD_TREATMENT_LABELS[key]}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
         </fieldset>
       )}
 

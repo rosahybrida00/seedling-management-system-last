@@ -17,9 +17,12 @@ import { formatDate } from "@/components/breeding/format"
 import { supabase } from "@/lib/supabase-client"
 import { PROGRAM_RESULT_LABELS } from "@/lib/domain/fieldLabels"
 import { ObservationsSection } from "@/components/breeding/parcelle/observations-section"
+import { TreatmentPlanDialog } from "@/components/breeding/parcelle/treatment-plan-dialog"
+import type { TreatmentPlan } from "@/lib/services/treatmentPlanner"
 import { ManualInterventionForm, SuggestionCards, type ManualDraft } from "@/components/breeding/parcelle/suggestions-ui"
 import { buildSuggestions } from "@/lib/services/suggestionEngine"
-import { acceptSuggestion, ignoreSuggestion, loadDismissedIds } from "@/lib/services/programService"
+import { acceptPlan, acceptSuggestion, ignoreSuggestion, loadDismissedIds } from "@/lib/services/programService"
+import { plantDisplayLabels } from "@/lib/services/plantGrouping"
 import {
   buildTimeline,
   completionProblem,
@@ -44,6 +47,8 @@ import {
 import type { FieldPlanting, Greenhouse, GreenhouseTable, Parcelle, PlantDetails } from "@/app/parcelle/types"
 
 interface Props {
+  /** Portée à l'ouverture : un plant (numéro cliqué) ou toute la variété (carte cliquée). */
+  initialScope?: "plant" | "variety"
   planting: FieldPlanting
   label: string
   details: PlantDetails | null
@@ -59,8 +64,8 @@ interface Props {
 type Scope = "plant" | "variety"
 const HISTORY_PREVIEW = 12
 
-export function PlantSheet({ planting, label, details, siblings, greenhouses, tables, parcelles, onBack, onRefresh }: Props) {
-  const [scope, setScope] = useState<Scope>("plant")
+export function PlantSheet({ initialScope = "plant", planting, label, details, siblings, greenhouses, tables, parcelles, onBack, onRefresh }: Props) {
+  const [scope, setScope] = useState<Scope>(initialScope)
   const [data, setData] = useState<SheetData | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -72,6 +77,11 @@ export function PlantSheet({ planting, label, details, siblings, greenhouses, ta
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [suggestionBusy, setSuggestionBusy] = useState(false)
   const [suggestionError, setSuggestionError] = useState<string | null>(null)
+  // Pop-up du plan de traitement : ouvert depuis une suggestion, ou tout de suite après une observation.
+  const [planOpen, setPlanOpen] = useState<{ id: string; plan: TreatmentPlan } | null>(null)
+  // Numéro du chargement qui contiendra la nouvelle observation : le plan s'ouvre quand il est terminé.
+  const [pendingPlanKey, setPendingPlanKey] = useState<number | null>(null)
+  const [loadedKey, setLoadedKey] = useState(-1)
   const [showAllHistory, setShowAllHistory] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -91,23 +101,27 @@ export function PlantSheet({ planting, label, details, siblings, greenhouses, ta
     [scope, planting, siblings],
   )
   const plantById = useMemo(() => new Map(scopedPlantings.map((item) => [item.id, item])), [scopedPlantings])
+  // Numéros simples (n°3, ou Lot 2 · n°3) : jamais de code technique.
+  const displayLabels = useMemo(() => plantDisplayLabels(siblings.length > 0 ? siblings : [planting]), [siblings, planting])
   const plantRefs: PlantRef[] = useMemo(
     () => scopedPlantings.map((item) => ({
       id: item.id,
       plantedAt: item.planted_at,
-      label: `${item.individual_number ? `n°${item.individual_number}` : "plant"} · ${locationName(item.greenhouse_table_id, item.parcelle_id)}`,
+      label: `${displayLabels.get(item.id) ?? "plant"} · ${locationName(item.greenhouse_table_id, item.parcelle_id)}`,
     })),
-    [scopedPlantings, locationName],
+    [scopedPlantings, locationName, displayLabels],
   )
 
   useEffect(() => {
     let cancelled = false
+    const key = reloadKey
     setLoading(true)
     loadSheetData(scopedPlantings.map((item) => item.id)).then(({ data: loaded, error }) => {
       if (cancelled) return
       setData(loaded)
       setLoadError(error)
       setLoading(false)
+      setLoadedKey(key)
     })
     return () => { cancelled = true }
   }, [scopedPlantings, reloadKey])
@@ -170,6 +184,26 @@ export function PlantSheet({ planting, label, details, siblings, greenhouses, ta
     })
   }, [data, dismissed, planting.id, today])
 
+  // Après une observation avec des problèmes cochés, le plan s'ouvre dès que la frise est rechargée.
+  useEffect(() => {
+    if (pendingPlanKey == null || loading || loadedKey < pendingPlanKey) return
+    const withPlan = suggestions.find((suggestion) => suggestion.plan && suggestion.source === "observation")
+    if (withPlan?.plan) setPlanOpen({ id: withPlan.id, plan: withPlan.plan })
+    setPendingPlanKey(null)
+  }, [pendingPlanKey, loading, loadedKey, suggestions])
+
+  async function validatePlan(plan: TreatmentPlan) {
+    if (!planOpen) return
+    setSuggestionBusy(true)
+    setSuggestionError(null)
+    const outcome = await acceptPlan(target, { greenhouse_id: location.greenhouseId, greenhouse_table_id: location.greenhouseTableId, parcelle_id: location.parcelleId }, plan, today)
+    setSuggestionBusy(false)
+    if (outcome.error) { setSuggestionError(outcome.error); if (outcome.created > 0) reload(); return }
+    setDismissed((current) => new Set(current).add(planOpen.id))
+    setPlanOpen(null)
+    reload(`Plan validé : ${outcome.created} produit${outcome.created > 1 ? "s" : ""}, ${outcome.interventions} intervention${outcome.interventions > 1 ? "s" : ""} au calendrier.`)
+  }
+
   async function acceptPlantSuggestion(suggestion: Parameters<typeof acceptSuggestion>[2], chosen: string[]) {
     setSuggestionBusy(true)
     setSuggestionError(null)
@@ -203,8 +237,7 @@ export function PlantSheet({ planting, label, details, siblings, greenhouses, ta
       <div>
         <h2 className="font-serif text-xl text-foreground">{label}</h2>
         <p className="text-sm text-muted-foreground">
-          {locationName(planting.greenhouse_table_id, planting.parcelle_id)}
-          {planting.individual_number ? ` · n°${planting.individual_number}` : ""} · en place depuis le {formatDate(planting.planted_at)}
+          {locationName(planting.greenhouse_table_id, planting.parcelle_id)} · {displayLabels.get(planting.id) ?? "plant"} · en place depuis le {formatDate(planting.planted_at)}
         </p>
       </div>
 
@@ -257,6 +290,8 @@ export function PlantSheet({ planting, label, details, siblings, greenhouses, ta
 
       {notice ? <p role="status" className="text-sm text-primary">{notice}</p> : null}
 
+      {planOpen ? <TreatmentPlanDialog plan={planOpen.plan} startDate={today} busy={suggestionBusy} error={suggestionError} onValidate={validatePlan} onClose={() => setPlanOpen(null)} /> : null}
+
       {panel === "observer" ? (
         <Card className="flex flex-col gap-3 p-3">
           <div className="flex rounded-md border border-border p-0.5 text-xs" role="tablist" aria-label="Observer ou intervenir">
@@ -275,6 +310,8 @@ export function PlantSheet({ planting, label, details, siblings, greenhouses, ta
                 observations={[]}
                 showList={false}
                 startOpen
+                onSaved={(saved) => { if (saved.diseases.length + saved.pests.length > 0) setPendingPlanKey(reloadKey + 1) }}
+                onCancel={() => setPanel("none")}
                 onRefresh={() => { setPanel("none"); reload("Observation enregistrée.") }}
               />
             </>
@@ -303,8 +340,8 @@ export function PlantSheet({ planting, label, details, siblings, greenhouses, ta
 
       {suggestions.length > 0 ? (
         <section className="flex flex-col gap-2" aria-label="Suggestions pour ce plant">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-destructive">Suggestions · d&apos;après vos observations</h4>
-          <SuggestionCards suggestions={suggestions} onAccept={acceptPlantSuggestion} onIgnore={ignorePlantSuggestion} busy={suggestionBusy} />
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-destructive">Plan de traitement suggéré · d&apos;après vos observations</h4>
+          <SuggestionCards suggestions={suggestions} onAccept={acceptPlantSuggestion} onOpenPlan={(suggestion) => { if (suggestion.plan) { setSuggestionError(null); setPlanOpen({ id: suggestion.id, plan: suggestion.plan }) } }} onIgnore={ignorePlantSuggestion} busy={suggestionBusy} />
           <Button size="sm" variant="ghost" className="w-fit" onClick={() => { setObserveTab("intervention"); setPanel("observer") }}>Intervenir autrement</Button>
           {suggestionError ? <p role="alert" className="text-sm text-destructive">{suggestionError}</p> : null}
         </section>

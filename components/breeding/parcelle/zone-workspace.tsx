@@ -68,6 +68,8 @@ export function ZoneWorkspace() {
   const [watchlistOnly, setWatchlistOnly] = useState(false)
   const [zoneKey, setZoneKey] = useState<string | null>(null)
   const [plantingId, setPlantingId] = useState<string | null>(null)
+  // Ouverture depuis la carte d'une variété : fiche de toute la variété ; depuis un numéro : fiche d'un plant.
+  const [plantScope, setPlantScope] = useState<"plant" | "variety">("plant")
   const [flashOpen, setFlashOpen] = useState(false)
   // Fiche unifiée (frise) disponible seulement si la migration 033 est appliquée.
   const [tasksReady, setTasksReady] = useState(false)
@@ -339,13 +341,15 @@ export function ZoneWorkspace() {
           plantingLabel={plantingLabel} programsByPlanting={programsByPlanting} interventionsByProgram={interventionsByProgram}
           observationsByPlanting={observationsByPlanting} zonePrograms={currentZonePrograms}
           onBack={() => { setView("dashboard"); setZoneKey(null) }}
-          onOpenPlant={(id) => { setPlantingId(id); setView("plant") }}
+          onOpenPlant={(id, scope) => { setPlantingId(id); setPlantScope(scope ?? "plant"); setView("plant") }}
           onRefresh={fetchData}
         />
       ) : null}
 
       {view === "plant" && currentPlanting && tasksReady ? (
         <PlantSheet
+          key={`${currentPlanting.id}:${plantScope}`}
+          initialScope={plantScope}
           planting={currentPlanting} label={plantingLabel(currentPlanting)}
           details={plantingDetails(currentPlanting)}
           siblings={plantings.filter((item) =>

@@ -21,6 +21,7 @@ import { getWeatherForDate } from "@/lib/services/weatherService"
 import { buildSuggestions, appliedKeysFromPrograms, type Suggestion } from "@/lib/services/suggestionEngine"
 import { daysBetween, isIsoDate, newInterventionProductName, todayIso } from "@/lib/services/plantTimeline"
 import {
+  acceptPlan,
   acceptSuggestion,
   applyIntervention,
   createProgramWithIntervention,
@@ -33,6 +34,8 @@ import {
   type ProgramTarget,
 } from "@/lib/services/programService"
 import { ManualInterventionForm, SuggestionCards, type ManualDraft } from "@/components/breeding/parcelle/suggestions-ui"
+import { TreatmentPlanDialog } from "@/components/breeding/parcelle/treatment-plan-dialog"
+import type { TreatmentPlan } from "@/lib/services/treatmentPlanner"
 import type { FieldIntervention, FieldObservation, FieldProgram, Zone } from "@/app/parcelle/types"
 
 interface Row {
@@ -65,6 +68,9 @@ export function ZoneProgramPanel({ zone, programs, interventionsByProgram, obser
   const today = todayIso()
 
   const [temperature, setTemperature] = useState<number | null>(null)
+  const [humidity, setHumidity] = useState<number | null>(null)
+  const [planOpen, setPlanOpen] = useState<Suggestion | null>(null)
+  const [planError, setPlanError] = useState<string | null>(null)
   const [heatThreshold, setHeatThreshold] = useState<number | null>(null)
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -75,7 +81,11 @@ export function ZoneProgramPanel({ zone, programs, interventionsByProgram, obser
 
   useEffect(() => {
     let cancelled = false
-    getWeatherForDate(today).then((weather) => { if (!cancelled) setTemperature(weather?.temperature ?? null) }).catch(() => undefined)
+    getWeatherForDate(today).then((weather) => {
+      if (cancelled) return
+      setTemperature(weather?.temperature ?? null)
+      setHumidity(weather?.humidity ?? null)
+    }).catch(() => undefined)
     supabase.from("user_settings").select("heat_threshold").maybeSingle().then(({ data }) => {
       if (!cancelled) setHeatThreshold((data?.heat_threshold as number | null | undefined) ?? null)
     })
@@ -110,10 +120,11 @@ export function ZoneProgramPanel({ zone, programs, interventionsByProgram, obser
       })),
       handled: rows.filter((row) => row.program.program_type === "curatif").map((row) => ({ programType: "curatif", date: row.intervention.done_date ?? row.intervention.due_date ?? today })),
       temperature,
+      humidity,
       heatThresholdC: heatThreshold,
       dismissedIds: dismissed,
     }),
-    [scope, today, programs, observations, rows, temperature, heatThreshold, dismissed],
+    [scope, today, programs, observations, rows, temperature, humidity, heatThreshold, dismissed],
   )
 
   async function run(action: () => Promise<{ error: string | null }>, success: string) {
@@ -135,6 +146,19 @@ export function ZoneProgramPanel({ zone, programs, interventionsByProgram, obser
       if (!outcome.error) setDismissed((current) => new Set(current).add(suggestion.id))
       return outcome
     }, "Programme validé : il vous reste à l'appliquer.")
+  }
+
+  async function validatePlan(plan: TreatmentPlan) {
+    if (!planOpen) return
+    setBusy(true)
+    setPlanError(null)
+    const outcome = await acceptPlan(target, location, plan, today)
+    setBusy(false)
+    if (outcome.error) { setPlanError(outcome.error); if (outcome.created > 0) onRefresh(); return }
+    setDismissed((current) => new Set(current).add(planOpen.id))
+    setPlanOpen(null)
+    setNotice(`Plan validé : ${outcome.created} produit${outcome.created > 1 ? "s" : ""}, ${outcome.interventions} intervention${outcome.interventions > 1 ? "s" : ""} au calendrier.`)
+    onRefresh()
   }
 
   function ignore(suggestion: Suggestion) {
@@ -165,13 +189,14 @@ export function ZoneProgramPanel({ zone, programs, interventionsByProgram, obser
 
   return (
     <div className="flex flex-col gap-4">
+      {planOpen?.plan ? <TreatmentPlanDialog plan={planOpen.plan} startDate={today} busy={busy} error={planError} onValidate={validatePlan} onClose={() => setPlanOpen(null)} /> : null}
       {notice ? <p role="status" className="text-sm text-primary">{notice}</p> : null}
       {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
 
       <section className="flex flex-col gap-2" aria-label="Suggestions">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Suggestions</h4>
         {suggestions.length > 0 ? (
-          <SuggestionCards suggestions={suggestions} onAccept={accept} onIgnore={ignore} busy={busy} />
+          <SuggestionCards suggestions={suggestions} onAccept={accept} onOpenPlan={(suggestion) => { setPlanError(null); setPlanOpen(suggestion) }} onIgnore={ignore} busy={busy} />
         ) : (
           <p className="text-sm text-muted-foreground">Aucune suggestion pour le moment. Elle réapparaîtra avec la saison ou après une observation sanitaire.</p>
         )}

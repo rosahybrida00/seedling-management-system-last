@@ -10,6 +10,7 @@
 import { supabase } from "@/lib/supabase-client"
 import { humanError, weatherIdFor, type ActionResult } from "@/lib/services/plantSheetService"
 import { suggestionProductLabel, type Suggestion } from "@/lib/services/suggestionEngine"
+import { addDays, type TreatmentPlan } from "@/lib/services/treatmentPlanner"
 
 export type ProgramTarget = { greenhouse_id: string } | { parcelle_id: string } | { planting_id: string }
 
@@ -163,4 +164,51 @@ export async function loadDismissedIds(target: ProgramTarget): Promise<Set<strin
   if (error || !data) return new Set()
   const prefix = `${targetKey(target)}:`
   return new Set((data as Array<{ dedupe_key: string }>).map((row) => row.dedupe_key).filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)))
+}
+
+// ------------------------------ Plan de traitement --------------------------
+
+export interface AcceptPlanResult extends ActionResult {
+  /** Produits dont le programme a été créé. */
+  created: number
+  /** Nombre total d'interventions posées (premières applications et rappels). */
+  interventions: number
+}
+
+function planNote(step: TreatmentPlan["steps"][number]): string {
+  const mode = step.mode === "curatif" ? "Curatif" : "Préventif"
+  return `${mode} · ${step.coversLabels.join(", ")}. Dose et mode d'emploi : selon l'étiquette du produit.`
+}
+
+/**
+ * Enregistre un plan de traitement : un programme par produit, avec la première
+ * application (J0) puis les rappels (J+7…). Les produits sont décalés pour ne jamais
+ * être appliqués le même jour. En cas d'échec, les produits déjà créés restent en
+ * place et le message dit lequel n'a pas pu l'être.
+ */
+export async function acceptPlan(target: ProgramTarget, location: EventLocation, plan: TreatmentPlan, startDate: string): Promise<AcceptPlanResult> {
+  let created = 0
+  let interventions = 0
+  for (const step of plan.steps) {
+    const dates = step.offsets.map((offset) => addDays(startDate, offset))
+    const first = await createProgramWithIntervention(target, location, {
+      programType: step.mode === "curatif" ? "curatif" : "preventif",
+      treatmentCodes: [step.productCode],
+      fertilizerCode: "",
+      productName: step.productLabel,
+      date: dates[0],
+      notes: planNote(step),
+    })
+    if (first.error || !first.programId) {
+      return { error: `« ${step.productLabel} » n'a pas pu être enregistré : ${first.error}${created > 0 ? ` (${created} produit${created > 1 ? "s" : ""} déjà enregistré${created > 1 ? "s" : ""})` : ""}`, created, interventions }
+    }
+    created += 1
+    interventions += first.interventionId ? 1 : 0
+    for (const date of dates.slice(1)) {
+      const next = await scheduleNext(first.programId, date, location)
+      if (next.error) return { error: `Rappel du ${date} pour « ${step.productLabel} » non enregistré : ${next.error}`, created, interventions }
+      interventions += 1
+    }
+  }
+  return { error: null, created, interventions }
 }

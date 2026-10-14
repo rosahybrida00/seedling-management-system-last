@@ -23,6 +23,7 @@
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
@@ -62,11 +63,13 @@
   --secondary-foreground: oklch(0.3 0.03 150);
   --muted: oklch(0.955 0.012 120);
   --muted-foreground: oklch(0.52 0.02 145);
-  --accent: oklch(0.63 0.16 15);
+  --accent: oklch(0.52 0.17 15);
   --accent-foreground: oklch(0.985 0.01 20);
-  --destructive: oklch(0.55 0.2 27);
+  --destructive: oklch(0.5 0.2 27);
   --border: oklch(0.9 0.015 130);
-  --input: oklch(0.9 0.015 130);
+  /* Contour des boutons et champs : au moins 3:1 face au fond et aux cartes (WCAG 1.4.11). */
+  --border-strong: oklch(0.58 0.035 145);
+  --input: oklch(0.58 0.035 145);
   --ring: oklch(0.46 0.09 150);
   --chart-1: oklch(0.46 0.09 150);
   --chart-2: oklch(0.63 0.16 15);
@@ -102,7 +105,8 @@
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
+  --border-strong: oklch(1 0 0 / 45%);
+  --input: oklch(1 0 0 / 45%);
   --ring: oklch(0.556 0 0);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
@@ -138,7 +142,8 @@
     --accent-foreground: oklch(0.985 0 0);
     --destructive: oklch(0.704 0.191 22.216);
     --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
+    --border-strong: oklch(1 0 0 / 45%);
+    --input: oklch(1 0 0 / 45%);
     --ring: oklch(0.556 0 0);
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
